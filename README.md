@@ -27,6 +27,28 @@ after your first tap/click/keypress (browser autoplay policy).
 > as a `file://` URL will fail because the browser blocks ES-module imports from
 > the filesystem.
 
+## Play with no server
+
+Don't want to run a server? Use **`standalone.html`** at the repo root. It is a
+single self-contained file that bundles the HTML, all CSS, and every JavaScript
+module inline, so it plays directly from the local filesystem with **no server,
+no hosting, and no network access**:
+
+1. Download/save `standalone.html`.
+2. Open it directly in any browser — double-tap/open the file (a `file://` URL).
+   This works on desktop and on mobile (save the file, then open it from your
+   browser or files app).
+3. Pick a map and play. As always, audio unlocks on your first tap (browser
+   autoplay policy).
+
+`standalone.html` is a generated artifact — it behaves identically to the
+modular `index.html` + `src/` version. Do not edit it by hand; edit the source
+under `src/` and regenerate with:
+
+```sh
+npm run bundle      # or: node scripts/bundle.mjs
+```
+
 ## Controls
 
 - **Draw a route:** press (touch or mouse) on an aircraft and drag to trace a

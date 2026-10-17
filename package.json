@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "test": "node --test 'test/**/*.test.js'",
+    "bundle": "node scripts/bundle.mjs",
     "smoke": "node scripts/smoke.mjs",
     "verify": "bash scripts/verify.sh",
     "start": "python3 -m http.server 8000"
