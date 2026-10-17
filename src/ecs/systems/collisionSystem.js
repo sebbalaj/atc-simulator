@@ -101,6 +101,11 @@ function wakePad(snapshots) {
 export function createCollisionSystem(game) {
   const { world, bus, spatial } = game;
 
+  // Track which plane is currently in a proximity breach so each distinct
+  // near-miss episode (a plane entering the warning state) emits exactly one
+  // 'aircraft:nearmiss' event instead of one per tick.
+  const warnedLast = new Set();
+
   return function collisionSystem() {
     const ids = world.query(Components.Transform, Components.Aircraft, Components.Hitbox);
     const snapshots = [];
@@ -121,14 +126,21 @@ export function createCollisionSystem(game) {
     const { warnings, crashes, closest } = detectConflicts(snapshots, spatial);
     game.closestSeparation = closest;
 
-    // Apply/clear warning state.
+    // Apply/clear warning state and emit one near-miss per new breach episode.
     for (const id of ids) {
       const render = world.getComponent(id, Components.Render);
       const ac = world.getComponent(id, Components.Aircraft);
       const warned = warnings.has(id);
       if (render) render.warning = warned;
       if (ac) ac.proximity = warned;
+      if (warned && !warnedLast.has(id)) {
+        // New entrant into a proximity breach: a near-miss.
+        bus.emit("aircraft:nearmiss", { id, kind: ac && ac.kind });
+      }
     }
+    // Refresh the "warned last tick" set for next-tick edge detection.
+    warnedLast.clear();
+    for (const id of warnings) warnedLast.add(id);
 
     if (crashes.length > 0 && !game.gameOver) {
       game.gameOver = true;

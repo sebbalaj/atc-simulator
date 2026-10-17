@@ -18,6 +18,7 @@ import { createLandingSystem } from "./ecs/systems/landingSystem.js";
 import { createCollisionSystem } from "./ecs/systems/collisionSystem.js";
 import { createRenderSystem } from "./ecs/systems/renderSystem.js";
 import { attachInput } from "./ui/input.js";
+import { createConsole } from "./ui/console.js";
 
 // Fixed simulation step: 60 updates per second.
 const FIXED_DT = 1 / 60;
@@ -57,9 +58,15 @@ export function createGame(options = {}) {
     time: 0, // accumulated simulation time (seconds)
     sweep: 0, // radar sweep angle (radians)
     selectedId: null,
+    // Camera for strip-centering: target in world coords, followId tracks a
+    // selected plane. null target == identity (no pan), the default on Map 1.
+    camera: { target: null, followId: null },
+    // Transient top-banner event message: { text, alpha, until }.
+    banner: null,
     gameOver: false,
     gameOverReason: null,
     closestSeparation: null,
+    console: null,
     stats: { landed: 0, crashed: 0 },
     _accumulator: 0,
     _lastTs: 0,
@@ -74,12 +81,24 @@ export function createGame(options = {}) {
   const collisionSystem = createCollisionSystem(game);
   const renderSystem = createRenderSystem(game);
 
-  // Light bookkeeping on gameplay events.
-  bus.on("aircraft:landed", () => {
+  /** Flash a transient banner message at the top of the scope. */
+  function flashBanner(text, seconds = 2.5) {
+    game.banner = { text, alpha: 1, until: game.time + seconds };
+  }
+  game.flashBanner = flashBanner;
+
+  // Light bookkeeping + banner feedback on gameplay events.
+  bus.on("aircraft:landed", (p) => {
     game.stats.landed += 1;
+    flashBanner((p && p.kind ? p.kind.toUpperCase() : "FLIGHT") + " LANDED");
   });
   bus.on("aircraft:crashed", () => {
     game.stats.crashed += 1;
+  });
+  bus.on("aircraft:fuelout", () => flashBanner("FUEL EXHAUSTED - REP PENALTY"));
+  bus.on("aircraft:excessivehold", () => flashBanner("HELD TOO LONG"));
+  bus.on("level:over", (p) => {
+    if (p && p.reason === "fired") flashBanner("GAME OVER - YOU'RE FIRED");
   });
 
   /**
@@ -90,6 +109,12 @@ export function createGame(options = {}) {
   function update(dt) {
     game.time += dt;
     game.sweep = (game.sweep + (dt * Math.PI * 2) / 4) % (Math.PI * 2);
+    // Fade/expire the transient banner regardless of game-over state.
+    if (game.banner) {
+      const remaining = game.banner.until - game.time;
+      if (remaining <= 0) game.banner = null;
+      else game.banner.alpha = Math.min(1, remaining / 0.8);
+    }
     if (game.gameOver) return;
     spawnSystem(dt);
     movementSystem(dt);
@@ -100,6 +125,8 @@ export function createGame(options = {}) {
   /** Draw a single frame. */
   function render() {
     const { ctx, width: w, height: h } = game;
+    // Refresh the DOM console (clock/bank/reputation/strips) each frame.
+    if (game.console) game.console.update();
     if (!ctx) return;
     // Blink phase for proximity warnings (~3 Hz).
     const blinkPhase = (game.time * 3) % 1;
@@ -137,6 +164,12 @@ export function createGame(options = {}) {
 
     game._detachInput = attachInput(canvas, game);
 
+    // Build the bottom-console UI (clock/bank/reputation/flight strips) now that
+    // the DOM exists. It subscribes to the EventBus for economy/reputation.
+    if (document.getElementById("console")) {
+      game.console = createConsole(game);
+    }
+
     game.running = true;
     game._lastTs = performance.now() / 1000;
     game._rafId = requestAnimationFrame(frame);
@@ -148,6 +181,10 @@ export function createGame(options = {}) {
     if (game._detachInput) {
       game._detachInput();
       game._detachInput = null;
+    }
+    if (game.console) {
+      game.console.detach();
+      game.console = null;
     }
     if (typeof window !== "undefined") {
       window.removeEventListener("resize", resize);

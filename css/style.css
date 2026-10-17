@@ -100,3 +100,82 @@ body {
   gap: 4px;
   -webkit-overflow-scrolling: touch;
 }
+
+/* Individual flight strip: tappable row with callsign, class, altitude and a
+   fuel bar. Left border is tinted with the aircraft class color. */
+.flight-strip {
+  border: 1px solid var(--crt-green-dim);
+  border-left: 4px solid var(--crt-green);
+  border-radius: 3px;
+  padding: 3px 6px;
+  background: rgba(57, 255, 20, 0.05);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.flight-strip.selected {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #fff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+}
+
+.flight-strip.fuel-low {
+  border-left-color: #ffd23b;
+}
+
+.flight-strip.fuel-critical {
+  border-left-color: var(--danger);
+  animation: strip-blink 0.6s steps(2, start) infinite;
+}
+
+@keyframes strip-blink {
+  to {
+    background: rgba(255, 59, 48, 0.18);
+  }
+}
+
+.strip-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: clamp(11px, 3.2vw, 14px);
+}
+
+.strip-callsign {
+  font-weight: bold;
+  letter-spacing: 1px;
+}
+
+.strip-kind {
+  color: var(--crt-green-dim);
+  font-size: 0.8em;
+}
+
+.strip-alt {
+  margin-left: auto;
+  color: rgba(220, 255, 210, 0.9);
+  font-size: 0.85em;
+}
+
+.strip-fuel {
+  margin-top: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.strip-fuel-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--crt-green);
+  transition: width 0.2s linear;
+}
+
+.flight-strip.fuel-low .strip-fuel-fill {
+  background: #ffd23b;
+}
+
+.flight-strip.fuel-critical .strip-fuel-fill {
+  background: var(--danger);
+}

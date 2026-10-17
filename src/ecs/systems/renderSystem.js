@@ -8,16 +8,43 @@
 import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import { runwayThreshold, runwayFarEnd } from "../../game/airport.js";
+import {
+  applyCamera,
+  drawLowFuelGauges,
+  drawProximityAlarm,
+  drawEventBanner,
+} from "../../ui/hud.js";
+
+// Separation at/under which the proximity alarm vignette begins. Matches the
+// widest class separation bubble so the alarm tracks real conflicts.
+const ALARM_THRESHOLD = 72;
 
 /** Build the ECS render system bound to a game instance. */
 export function createRenderSystem(game) {
   const { world } = game;
 
   return function renderSystem(ctx, width, height, blinkPhase) {
+    const blinkOn = blinkPhase === undefined ? true : blinkPhase < 0.5;
+
+    // Background is drawn in screen space (fills the scope regardless of pan).
     drawRadarBackground(ctx, width, height, game.sweep);
+
+    // World layers are drawn through the camera transform so a selected plane
+    // can be centered on screen. With no camera target this is the identity.
+    ctx.save();
+    applyCamera(ctx, game.camera, width, height);
     drawAirport(ctx, game.map);
     drawPaths(ctx, world);
     drawAircraft(ctx, world, game, blinkPhase);
+    drawLowFuelGauges(ctx, world, blinkOn);
+    ctx.restore();
+
+    // Screen-space overlays.
+    drawProximityAlarm(ctx, width, height, game.closestSeparation, ALARM_THRESHOLD, blinkOn);
+    if (game.banner && game.banner.text) {
+      drawEventBanner(ctx, width, game.banner.text, game.banner.alpha ?? 1);
+    }
+
     if (game.gameOver) drawGameOver(ctx, width, height, game.gameOverReason);
   };
 }
@@ -230,11 +257,17 @@ function drawGameOver(ctx, width, height, reason) {
   ctx.font = 'bold 28px "Courier New", monospace';
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  const msg = reason === "collision" ? "MID-AIR COLLISION" : "LEVEL OVER";
+  const msg =
+    reason === "collision"
+      ? "MID-AIR COLLISION"
+      : reason === "fired"
+      ? "YOU'RE FIRED"
+      : "LEVEL OVER";
   ctx.fillText(msg, width / 2, height / 2 - 14);
   ctx.font = '14px "Courier New", monospace';
   ctx.fillStyle = "rgba(255,255,255,0.8)";
-  ctx.fillText("Level ended", width / 2, height / 2 + 16);
+  const sub = reason === "fired" ? "Reputation hit zero" : "Level ended";
+  ctx.fillText(sub, width / 2, height / 2 + 16);
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
 }

@@ -34,8 +34,15 @@ const MIN_POINT_DISTANCE = 12;
  * @param {number} clientX
  * @param {number} clientY
  */
-export function screenToWorld(rect, clientX, clientY) {
-  return { x: clientX - rect.left, y: clientY - rect.top };
+export function screenToWorld(rect, clientX, clientY, camera, width, height) {
+  let x = clientX - rect.left;
+  let y = clientY - rect.top;
+  // Undo the camera translate (renderSystem centers camera.target on screen).
+  if (camera && camera.target && width != null && height != null) {
+    x -= width / 2 - camera.target.x;
+    y -= height / 2 - camera.target.y;
+  }
+  return { x, y };
 }
 
 /** Whether a point is within an aircraft's pickable radius. Pure helper. */
@@ -75,7 +82,7 @@ export function attachInput(canvas, game) {
   function onPointerDown(ev) {
     if (game.gameOver) return;
     const rect = canvas.getBoundingClientRect();
-    const pt = screenToWorld(rect, ev.clientX, ev.clientY);
+    const pt = screenToWorld(rect, ev.clientX, ev.clientY, game.camera, game.width, game.height);
     const id = pick(pt);
     if (id == null) {
       game.selectedId = null;
@@ -96,7 +103,7 @@ export function attachInput(canvas, game) {
   function onPointerMove(ev) {
     if (!drawing) return;
     const rect = canvas.getBoundingClientRect();
-    const pt = screenToWorld(rect, ev.clientX, ev.clientY);
+    const pt = screenToWorld(rect, ev.clientX, ev.clientY, game.camera, game.width, game.height);
     const last = drawing.points[drawing.points.length - 1];
     if (Math.hypot(pt.x - last.x, pt.y - last.y) >= MIN_POINT_DISTANCE) {
       drawing.points.push(pt);
