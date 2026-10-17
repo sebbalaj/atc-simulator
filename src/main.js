@@ -24,6 +24,7 @@ import { createConsole } from "./ui/console.js";
 import { createProgression } from "./game/progression.js";
 import { createScreens } from "./ui/screens.js";
 import { createAudioEngine } from "./game/audio.js";
+import { sweepRate } from "./game/radar.js";
 
 // Fixed simulation step: 60 updates per second.
 const FIXED_DT = 1 / 60;
@@ -159,7 +160,13 @@ export function createGame(options = {}) {
    */
   function update(dt) {
     game.time += dt;
-    game.sweep = (game.sweep + (dt * Math.PI * 2) / 4) % (Math.PI * 2);
+    // Advance the radar sweep authoritatively. A higher radar level (from the
+    // radar-range upgrade) speeds the sweep up so more range comes with faster
+    // refresh. The render layer reads game.sweep (and the value it last saw) to
+    // gate displayed blips - it never advances the sweep itself.
+    const radarLevel =
+      (game.upgradeState && game.upgradeState.flags && game.upgradeState.flags.radarLevel) || 0;
+    game.sweep = (game.sweep + dt * sweepRate(radarLevel)) % (Math.PI * 2);
     // Fade/expire the transient banner regardless of game-over state.
     if (game.banner) {
       const remaining = game.banner.until - game.time;
@@ -382,6 +389,7 @@ export function createGame(options = {}) {
     game.world.clear();
     game.time = 0;
     game.sweep = 0;
+    game._renderPrevSweep = 0;
     game.selectedId = null;
     game.camera = { target: null, followId: null };
     game.banner = null;

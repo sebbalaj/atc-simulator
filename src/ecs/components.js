@@ -64,13 +64,28 @@ export function Hitbox(radius = 8) {
   return { radius };
 }
 
-/** Rendering hints (shape, color, size). Consumed by the render system. */
+/**
+ * Rendering hints (shape, color, size). Consumed by the render system.
+ *
+ * The lastSweep* / lastSweptTime / seen fields are DISPLAY-ONLY state for the
+ * radar sweep mechanic: the render layer latches an aircraft's shown blip to
+ * its true position only when the sweep beam crosses its bearing, then fades
+ * the blip until the next sweep. They are written exclusively by the render
+ * layer (never read by movement/landing/collision), and defaulted here so pure
+ * modules and headless tests are unaffected.
+ */
 export function Render(opts = {}) {
   return {
     shape: opts.shape ?? "triangle",
     color: opts.color ?? "#39ff14",
     size: opts.size ?? 8,
     blink: opts.blink ?? false,
+    // Display-only radar-sweep state (render layer owns these).
+    seen: opts.seen ?? false, // has the beam ever swept this plane?
+    lastSweepX: opts.lastSweepX ?? 0, // last-swept displayed position
+    lastSweepY: opts.lastSweepY ?? 0,
+    lastSweepHeading: opts.lastSweepHeading ?? 0,
+    lastSweptTime: opts.lastSweptTime ?? -Infinity, // sim time of last sweep
   };
 }
 

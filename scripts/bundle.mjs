@@ -44,6 +44,7 @@ const ORDER = [
   "src/game/clock.js",
   "src/game/maps.js",
   "src/game/upgrades.js",
+  "src/game/radar.js",
   "src/game/progression.js",
   "src/game/audio.js",
   "src/ecs/world.js",

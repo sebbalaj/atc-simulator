@@ -8,6 +8,7 @@
 import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import { runwayThreshold, runwayFarEnd } from "../../game/airport.js";
+import { updateSweepDisplay, sweepPeriod } from "../../game/radar.js";
 import {
   applyCamera,
   drawLowFuelGauges,
@@ -264,10 +265,55 @@ function drawLockMarker(ctx, x, y, blinkOn) {
   ctx.restore();
 }
 
-/** Draw each aircraft icon, label, selection highlight and warning blink. */
+// Fraction of a sweep period over which a stale blip fades from full alpha down
+// to the dim floor. A blip just under one period old is the dimmest before its
+// next refresh; this keeps the "last-known position" feel without going dark.
+const BLIP_FADE_FLOOR = 0.28; // minimum alpha a swept-but-stale blip keeps
+const TRAIL_STEPS = 3; // short fading trail segments behind a fresh blip
+
+/**
+ * Draw each aircraft icon, label, selection highlight and warning blink.
+ *
+ * Radar-sweep gating (DISPLAY ONLY): each aircraft's shown blip is latched to
+ * its TRUE position only when the rotating sweep beam crosses its bearing; in
+ * between it holds the last-swept position and fades. The authoritative sim is
+ * never consulted here beyond reading true positions to latch. Selected and
+ * warning/emergency aircraft are force-latched every frame so a stale blip can
+ * never hide an actionable conflict. Fog/ILS alpha multiplies the sweep alpha.
+ */
 export function drawAircraft(ctx, world, game, blinkPhase) {
   const blinkOn = blinkPhase === undefined ? true : blinkPhase < 0.5;
   const ids = world.query(Components.Transform, Components.Aircraft, Components.Render);
+
+  // Radar center is the map center (fall back to the scope center).
+  const center =
+    game.map && game.map.center
+      ? game.map.center
+      : { x: game.width / 2, y: game.height / 2 };
+
+  // Build the display-update list: force-latch selected + warning/emergency
+  // planes so they always track live and never fade out.
+  const planes = [];
+  for (const id of ids) {
+    const t = world.getComponent(id, Components.Transform);
+    const render = world.getComponent(id, Components.Render);
+    const ac = world.getComponent(id, Components.Aircraft);
+    const selected = game.selectedId === id;
+    const force = selected || !!render.warning || !!(ac && ac.emergency);
+    planes.push({ render, x: t.x, y: t.y, heading: t.heading, force });
+  }
+
+  // Latch last-swept positions for planes the beam crossed this frame. Use the
+  // sweep value the render layer last observed (robust to frame/tick decoupling
+  // and 2PI wraparound), NOT a dt-derived delta.
+  const prevSweep = game._renderPrevSweep == null ? game.sweep : game._renderPrevSweep;
+  updateSweepDisplay(game.sweep, prevSweep, game.time, center, planes);
+  game._renderPrevSweep = game.sweep;
+
+  // Refresh cadence used for the fade curve.
+  const radarLevel =
+    (game.upgradeState && game.upgradeState.flags && game.upgradeState.flags.radarLevel) || 0;
+  const period = sweepPeriod(radarLevel);
 
   for (const id of ids) {
     const t = world.getComponent(id, Components.Transform);
@@ -278,14 +324,56 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
 
     const warning = render.warning;
     const selected = game.selectedId === id;
+    const important = selected || warning || !!(ac && ac.emergency);
 
-    // Fog hides planes beyond the visibility range (unless ILS is owned).
-    const fogAlpha = aircraftFogAlpha(game.weather, game.map, t.x, t.y);
+    // Never-swept new spawns are not drawn until the beam first reaches them,
+    // so the player genuinely acts on swept information. Important planes are
+    // force-latched above and so are always `seen`.
+    if (!render.seen) continue;
+
+    // Displayed blip position/heading is the LAST-SWEPT value, not the live one.
+    const dx = render.lastSweepX;
+    const dy = render.lastSweepY;
+    const dHeading = render.lastSweepHeading;
+
+    // Fog/ILS alpha is evaluated at the displayed (last-swept) position so it
+    // composes with the sweep gating rather than fighting it.
+    const fogAlpha = aircraftFogAlpha(game.weather, game.map, dx, dy);
     if (fogAlpha <= 0.02) continue;
 
+    // Sweep fade: full alpha right after a sweep, decaying toward a floor as the
+    // blip ages over one refresh period. Important planes stay at full alpha.
+    const age = game.time - render.lastSweptTime;
+    let sweepAlpha = 1;
+    if (!important && period > 0) {
+      const frac = Math.max(0, Math.min(1, age / period));
+      sweepAlpha = 1 - (1 - BLIP_FADE_FLOOR) * frac;
+    }
+
+    const alpha = fogAlpha * sweepAlpha;
+    if (alpha <= 0.02) continue;
+
+    // Short fading trail from the previous display toward the fresh blip, so a
+    // just-refreshed target reads as "newly painted by the sweep".
+    if (!important && age >= 0 && age < period * 0.5) {
+      const trailFade = 1 - Math.max(0, Math.min(1, age / (period * 0.5)));
+      for (let s = 1; s <= TRAIL_STEPS; s++) {
+        const back = (s / (TRAIL_STEPS + 1)) * def.size * 1.5;
+        const tx = dx - Math.cos(dHeading) * back;
+        const ty = dy - Math.sin(dHeading) * back;
+        ctx.save();
+        ctx.globalAlpha = alpha * trailFade * (1 - s / (TRAIL_STEPS + 1)) * 0.5;
+        ctx.fillStyle = render.color;
+        ctx.beginPath();
+        ctx.arc(tx, ty, Math.max(1, render.size * 0.3), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
     ctx.save();
-    ctx.globalAlpha = fogAlpha;
-    ctx.translate(t.x, t.y);
+    ctx.globalAlpha = alpha;
+    ctx.translate(dx, dy);
 
     // Selection ring (drawn unrotated, around the icon).
     if (selected) {
@@ -305,16 +393,16 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
       ctx.stroke();
     }
 
-    // Icon oriented to heading.
+    // Icon oriented to heading (last-swept heading).
     ctx.save();
-    ctx.rotate(t.heading);
+    ctx.rotate(dHeading);
     const color = warning && !blinkOn ? "#ff3b30" : render.color;
     ctx.fillStyle = color;
     ctx.strokeStyle = color;
     def.drawShape(ctx, render.size);
     ctx.restore();
 
-    // Label: callsign.
+    // Label: callsign (follows the blip).
     const cs = label ? label.callsign : "";
     if (cs) {
       ctx.fillStyle = warning ? "#ff6a60" : "rgba(220,255,210,0.9)";

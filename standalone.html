@@ -897,13 +897,28 @@ body {
             return { radius };
           }
 
-          /** Rendering hints (shape, color, size). Consumed by the render system. */
+          /**
+           * Rendering hints (shape, color, size). Consumed by the render system.
+           *
+           * The lastSweep* / lastSweptTime / seen fields are DISPLAY-ONLY state for the
+           * radar sweep mechanic: the render layer latches an aircraft's shown blip to
+           * its true position only when the sweep beam crosses its bearing, then fades
+           * the blip until the next sweep. They are written exclusively by the render
+           * layer (never read by movement/landing/collision), and defaulted here so pure
+           * modules and headless tests are unaffected.
+           */
           function Render(opts = {}) {
             return {
               shape: opts.shape ?? "triangle",
               color: opts.color ?? "#39ff14",
               size: opts.size ?? 8,
               blink: opts.blink ?? false,
+              // Display-only radar-sweep state (render layer owns these).
+              seen: opts.seen ?? false, // has the beam ever swept this plane?
+              lastSweepX: opts.lastSweepX ?? 0, // last-swept displayed position
+              lastSweepY: opts.lastSweepY ?? 0,
+              lastSweepHeading: opts.lastSweepHeading ?? 0,
+              lastSweptTime: opts.lastSweptTime ?? -Infinity, // sim time of last sweep
             };
           }
 
@@ -3282,6 +3297,122 @@ body {
           exports.applyUpgrade = applyUpgrade;
           exports.purchase = purchase;
         },
+        "src/game/radar.js": function (exports, require) {
+          // Radar sweep: pure, DOM-free helpers for the sweep-gated display mechanic.
+          //
+          // The radar sweep beam rotates around the scope center once every few seconds.
+          // An aircraft's DISPLAYED blip only refreshes to its current TRUE position when
+          // the beam passes over that aircraft's true bearing from center; between sweeps
+          // the blip holds its last-swept position and fades. This module contains only
+          // the math/state transitions for that behavior, so it is unit-testable under
+          // Node with no canvas. The authoritative simulation never imports this.
+
+          const TWO_PI = Math.PI * 2;
+
+          /** Normalize an angle into the [0, 2PI) range. */
+          function normalizeAngle(a) {
+            let r = a % TWO_PI;
+            if (r < 0) r += TWO_PI;
+            return r;
+          }
+
+          /**
+           * Did the sweep beam cross `bearing` while moving from `prevSweep` to `sweep`
+           * this frame? The beam always rotates in the increasing-angle direction, so the
+           * swept arc is (prevSweep -> sweep] going forward, which may wrap past 2PI.
+           *
+           * All three inputs are angles in radians (any real value; they are normalized).
+           * Returns true when `bearing` lies within the forward arc swept this frame.
+           *
+           * Wraparound: when prevSweep is just under 2PI and sweep is just over 0, a
+           * bearing near 0 (or near 2PI) is considered crossed.
+           *
+           * @param {number} sweep current beam angle this frame
+           * @param {number} prevSweep beam angle the render layer last observed
+           * @param {number} bearing aircraft bearing = atan2(trueY-cy, trueX-cx)
+           */
+          function sweepCrossed(sweep, prevSweep, bearing) {
+            const s0 = normalizeAngle(prevSweep);
+            const s1 = normalizeAngle(sweep);
+            const b = normalizeAngle(bearing);
+            // Forward-swept arc length since last frame (handles wraparound at 2PI).
+            const arc = normalizeAngle(s1 - s0);
+            if (arc <= 0) return false; // no motion this frame
+            // Distance from the arc start to the bearing, forward.
+            const toBearing = normalizeAngle(b - s0);
+            // Crossed if the bearing sits within (0, arc]. We include the arc endpoint so
+            // a bearing exactly reached this frame counts as swept.
+            return toBearing > 0 && toBearing <= arc;
+          }
+
+          /**
+           * Sweep angular rate (radians/second) for a given radar level. The base rate is
+           * one revolution per BASE_PERIOD seconds; each radar-range upgrade speeds the
+           * sweep up (more range comes with faster refresh), down to a floor period.
+           *
+           * @param {number} radarLevel number of radar-range upgrades owned (>= 0)
+           */
+          const SWEEP_BASE_PERIOD = 4; // seconds per revolution at radarLevel 0
+          const SWEEP_PERIOD_PER_LEVEL = 0.5; // seconds shaved per radar level
+          const SWEEP_MIN_PERIOD = 2; // never refresh faster than this
+
+          function sweepPeriod(radarLevel = 0) {
+            const lvl = Math.max(0, radarLevel | 0);
+            return Math.max(SWEEP_MIN_PERIOD, SWEEP_BASE_PERIOD - lvl * SWEEP_PERIOD_PER_LEVEL);
+          }
+
+          function sweepRate(radarLevel = 0) {
+            return TWO_PI / sweepPeriod(radarLevel);
+          }
+
+          /**
+           * Pure display-state update for one frame. Given the per-aircraft display state
+           * (the Render component's last-swept fields), the current/previous sweep angles,
+           * and a list of planes with their TRUE positions/headings, latch the displayed
+           * position/heading to the TRUE value for any plane whose bearing the beam just
+           * crossed, mark it seen, and reset its swept timestamp. Planes not crossed this
+           * frame keep their stale last-swept values; a never-swept plane stays unseen
+           * (so the render layer can keep it invisible/dim) until the beam first reaches
+           * it, unless `force` is set.
+           *
+           * Each plane entry: { render, x, y, heading, force? }. `render` is mutated in
+           * place (lastSweepX/Y/Heading, lastSweptTime, seen). `force` latches regardless
+           * of the sweep (used for selected / emergency aircraft so they never go stale).
+           *
+           * @param {number} sweep current beam angle
+           * @param {number} prevSweep beam angle last frame
+           * @param {number} time current sim time (seconds) stamped on a refresh
+           * @param {{x:number,y:number}} center radar center
+           * @param {Array} planes list described above
+           * @returns {number} count of planes refreshed this frame (for testing)
+           */
+          function updateSweepDisplay(sweep, prevSweep, time, center, planes) {
+            let refreshed = 0;
+            for (const p of planes) {
+              const bearing = Math.atan2(p.y - center.y, p.x - center.x);
+              const crossed = p.force || sweepCrossed(sweep, prevSweep, bearing);
+              if (crossed) {
+                p.render.lastSweepX = p.x;
+                p.render.lastSweepY = p.y;
+                p.render.lastSweepHeading = p.heading;
+                p.render.lastSweptTime = time;
+                if (p.render.seen) refreshed += 1;
+                p.render.seen = true;
+              }
+            }
+            return refreshed;
+          }
+
+
+          exports.normalizeAngle = normalizeAngle;
+          exports.sweepCrossed = sweepCrossed;
+          exports.SWEEP_BASE_PERIOD = SWEEP_BASE_PERIOD;
+          exports.SWEEP_PERIOD_PER_LEVEL = SWEEP_PERIOD_PER_LEVEL;
+          exports.SWEEP_MIN_PERIOD = SWEEP_MIN_PERIOD;
+          exports.sweepPeriod = sweepPeriod;
+          exports.sweepRate = sweepRate;
+          exports.updateSweepDisplay = updateSweepDisplay;
+        },
         "src/game/progression.js": function (exports, require) {
           // Progression: pure, DOM-free shift management and end-of-shift summary
           // aggregation. A "shift" is one play of a map on the shift clock (see
@@ -5064,6 +5195,7 @@ body {
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { runwayThreshold, runwayFarEnd } = require("src/game/airport.js");
+          const { updateSweepDisplay, sweepPeriod } = require("src/game/radar.js");
           const { applyCamera, drawLowFuelGauges, drawProximityAlarm, drawEventBanner, drawStorms, drawHospital, drawFog, drawWindIndicator, drawEmergencyFlash, aircraftFogAlpha } = require("src/ui/hud.js");
 
           // Separation at/under which the proximity alarm vignette begins. Matches the
@@ -5309,10 +5441,55 @@ body {
             ctx.restore();
           }
 
-          /** Draw each aircraft icon, label, selection highlight and warning blink. */
+          // Fraction of a sweep period over which a stale blip fades from full alpha down
+          // to the dim floor. A blip just under one period old is the dimmest before its
+          // next refresh; this keeps the "last-known position" feel without going dark.
+          const BLIP_FADE_FLOOR = 0.28; // minimum alpha a swept-but-stale blip keeps
+          const TRAIL_STEPS = 3; // short fading trail segments behind a fresh blip
+
+          /**
+           * Draw each aircraft icon, label, selection highlight and warning blink.
+           *
+           * Radar-sweep gating (DISPLAY ONLY): each aircraft's shown blip is latched to
+           * its TRUE position only when the rotating sweep beam crosses its bearing; in
+           * between it holds the last-swept position and fades. The authoritative sim is
+           * never consulted here beyond reading true positions to latch. Selected and
+           * warning/emergency aircraft are force-latched every frame so a stale blip can
+           * never hide an actionable conflict. Fog/ILS alpha multiplies the sweep alpha.
+           */
           function drawAircraft(ctx, world, game, blinkPhase) {
             const blinkOn = blinkPhase === undefined ? true : blinkPhase < 0.5;
             const ids = world.query(Components.Transform, Components.Aircraft, Components.Render);
+
+            // Radar center is the map center (fall back to the scope center).
+            const center =
+              game.map && game.map.center
+                ? game.map.center
+                : { x: game.width / 2, y: game.height / 2 };
+
+            // Build the display-update list: force-latch selected + warning/emergency
+            // planes so they always track live and never fade out.
+            const planes = [];
+            for (const id of ids) {
+              const t = world.getComponent(id, Components.Transform);
+              const render = world.getComponent(id, Components.Render);
+              const ac = world.getComponent(id, Components.Aircraft);
+              const selected = game.selectedId === id;
+              const force = selected || !!render.warning || !!(ac && ac.emergency);
+              planes.push({ render, x: t.x, y: t.y, heading: t.heading, force });
+            }
+
+            // Latch last-swept positions for planes the beam crossed this frame. Use the
+            // sweep value the render layer last observed (robust to frame/tick decoupling
+            // and 2PI wraparound), NOT a dt-derived delta.
+            const prevSweep = game._renderPrevSweep == null ? game.sweep : game._renderPrevSweep;
+            updateSweepDisplay(game.sweep, prevSweep, game.time, center, planes);
+            game._renderPrevSweep = game.sweep;
+
+            // Refresh cadence used for the fade curve.
+            const radarLevel =
+              (game.upgradeState && game.upgradeState.flags && game.upgradeState.flags.radarLevel) || 0;
+            const period = sweepPeriod(radarLevel);
 
             for (const id of ids) {
               const t = world.getComponent(id, Components.Transform);
@@ -5323,14 +5500,56 @@ body {
 
               const warning = render.warning;
               const selected = game.selectedId === id;
+              const important = selected || warning || !!(ac && ac.emergency);
 
-              // Fog hides planes beyond the visibility range (unless ILS is owned).
-              const fogAlpha = aircraftFogAlpha(game.weather, game.map, t.x, t.y);
+              // Never-swept new spawns are not drawn until the beam first reaches them,
+              // so the player genuinely acts on swept information. Important planes are
+              // force-latched above and so are always `seen`.
+              if (!render.seen) continue;
+
+              // Displayed blip position/heading is the LAST-SWEPT value, not the live one.
+              const dx = render.lastSweepX;
+              const dy = render.lastSweepY;
+              const dHeading = render.lastSweepHeading;
+
+              // Fog/ILS alpha is evaluated at the displayed (last-swept) position so it
+              // composes with the sweep gating rather than fighting it.
+              const fogAlpha = aircraftFogAlpha(game.weather, game.map, dx, dy);
               if (fogAlpha <= 0.02) continue;
 
+              // Sweep fade: full alpha right after a sweep, decaying toward a floor as the
+              // blip ages over one refresh period. Important planes stay at full alpha.
+              const age = game.time - render.lastSweptTime;
+              let sweepAlpha = 1;
+              if (!important && period > 0) {
+                const frac = Math.max(0, Math.min(1, age / period));
+                sweepAlpha = 1 - (1 - BLIP_FADE_FLOOR) * frac;
+              }
+
+              const alpha = fogAlpha * sweepAlpha;
+              if (alpha <= 0.02) continue;
+
+              // Short fading trail from the previous display toward the fresh blip, so a
+              // just-refreshed target reads as "newly painted by the sweep".
+              if (!important && age >= 0 && age < period * 0.5) {
+                const trailFade = 1 - Math.max(0, Math.min(1, age / (period * 0.5)));
+                for (let s = 1; s <= TRAIL_STEPS; s++) {
+                  const back = (s / (TRAIL_STEPS + 1)) * def.size * 1.5;
+                  const tx = dx - Math.cos(dHeading) * back;
+                  const ty = dy - Math.sin(dHeading) * back;
+                  ctx.save();
+                  ctx.globalAlpha = alpha * trailFade * (1 - s / (TRAIL_STEPS + 1)) * 0.5;
+                  ctx.fillStyle = render.color;
+                  ctx.beginPath();
+                  ctx.arc(tx, ty, Math.max(1, render.size * 0.3), 0, Math.PI * 2);
+                  ctx.fill();
+                  ctx.restore();
+                }
+              }
+
               ctx.save();
-              ctx.globalAlpha = fogAlpha;
-              ctx.translate(t.x, t.y);
+              ctx.globalAlpha = alpha;
+              ctx.translate(dx, dy);
 
               // Selection ring (drawn unrotated, around the icon).
               if (selected) {
@@ -5350,16 +5569,16 @@ body {
                 ctx.stroke();
               }
 
-              // Icon oriented to heading.
+              // Icon oriented to heading (last-swept heading).
               ctx.save();
-              ctx.rotate(t.heading);
+              ctx.rotate(dHeading);
               const color = warning && !blinkOn ? "#ff3b30" : render.color;
               ctx.fillStyle = color;
               ctx.strokeStyle = color;
               def.drawShape(ctx, render.size);
               ctx.restore();
 
-              // Label: callsign.
+              // Label: callsign (follows the blip).
               const cs = label ? label.callsign : "";
               if (cs) {
                 ctx.fillStyle = warning ? "#ff6a60" : "rgba(220,255,210,0.9)";
@@ -6631,6 +6850,7 @@ body {
           const { createProgression } = require("src/game/progression.js");
           const { createScreens } = require("src/ui/screens.js");
           const { createAudioEngine } = require("src/game/audio.js");
+          const { sweepRate } = require("src/game/radar.js");
 
           // Fixed simulation step: 60 updates per second.
           const FIXED_DT = 1 / 60;
@@ -6766,7 +6986,13 @@ body {
              */
             function update(dt) {
               game.time += dt;
-              game.sweep = (game.sweep + (dt * Math.PI * 2) / 4) % (Math.PI * 2);
+              // Advance the radar sweep authoritatively. A higher radar level (from the
+              // radar-range upgrade) speeds the sweep up so more range comes with faster
+              // refresh. The render layer reads game.sweep (and the value it last saw) to
+              // gate displayed blips - it never advances the sweep itself.
+              const radarLevel =
+                (game.upgradeState && game.upgradeState.flags && game.upgradeState.flags.radarLevel) || 0;
+              game.sweep = (game.sweep + dt * sweepRate(radarLevel)) % (Math.PI * 2);
               // Fade/expire the transient banner regardless of game-over state.
               if (game.banner) {
                 const remaining = game.banner.until - game.time;
@@ -6989,6 +7215,7 @@ body {
               game.world.clear();
               game.time = 0;
               game.sweep = 0;
+              game._renderPrevSweep = 0;
               game.selectedId = null;
               game.camera = { target: null, followId: null };
               game.banner = null;
