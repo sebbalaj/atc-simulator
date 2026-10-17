@@ -1,19 +1,33 @@
 // Bootstrap + fixed-timestep game loop. Sizes the radar canvas with
-// devicePixelRatio scaling, builds the ECS World, and runs an accumulator loop
-// driven by requestAnimationFrame. Renders a CRT-style radar grid and a sweep
-// placeholder so there is visible output. No gameplay yet.
+// devicePixelRatio scaling, builds the ECS World and Map 1, wires the gameplay
+// systems (spawn -> movement -> landing -> collision -> render) into an
+// accumulator loop driven by requestAnimationFrame, and attaches pointer input.
 //
-// Browser-coupled: all window/document access is guarded so pure core/ECS
-// modules remain importable under Node (`node --check` / unit tests).
+// Browser-coupled: all window/document access is guarded so pure core/ECS/game
+// modules remain importable under Node (`node --check` / unit tests). main.js
+// only auto-boots and touches the DOM inside start()/the document guard below.
 
 import { createWorld } from "./ecs/world.js";
 import { createEventBus } from "./core/events.js";
 import { createSpatialHash } from "./core/spatialHash.js";
+import { createRng } from "./core/rng.js";
+import { createMap1 } from "./game/airport.js";
+import { createSpawnSystem } from "./ecs/systems/spawnSystem.js";
+import { createMovementSystem } from "./ecs/systems/movementSystem.js";
+import { createLandingSystem } from "./ecs/systems/landingSystem.js";
+import { createCollisionSystem } from "./ecs/systems/collisionSystem.js";
+import { createRenderSystem } from "./ecs/systems/renderSystem.js";
+import { attachInput } from "./ui/input.js";
 
 // Fixed simulation step: 60 updates per second.
 const FIXED_DT = 1 / 60;
 // Clamp huge frame gaps (e.g. tab regained focus) so we never spiral.
 const MAX_FRAME_DELTA = 0.25;
+
+// Default radar dimensions used for headless construction (before a canvas is
+// attached). Overwritten by resize() once a real canvas exists.
+const DEFAULT_WIDTH = 400;
+const DEFAULT_HEIGHT = 600;
 
 /**
  * Create the Game object. Pure construction; nothing touches the DOM until
@@ -22,38 +36,74 @@ const MAX_FRAME_DELTA = 0.25;
 export function createGame(options = {}) {
   const world = createWorld();
   const bus = createEventBus();
-  const spatial = createSpatialHash(options.cellSize ?? 64);
+  const spatial = createSpatialHash(options.cellSize ?? 96);
+  const rng = createRng(options.seed ?? 1337);
+
+  const width = options.width ?? DEFAULT_WIDTH;
+  const height = options.height ?? DEFAULT_HEIGHT;
 
   const game = {
     world,
     bus,
     spatial,
+    rng,
+    map: createMap1(width, height),
     canvas: null,
     ctx: null,
     dpr: 1,
-    width: 0, // CSS pixels of the radar region
-    height: 0,
+    width,
+    height,
     running: false,
     time: 0, // accumulated simulation time (seconds)
-    sweep: 0, // radar sweep angle (radians), rendered placeholder
+    sweep: 0, // radar sweep angle (radians)
+    selectedId: null,
+    gameOver: false,
+    gameOverReason: null,
+    closestSeparation: null,
+    stats: { landed: 0, crashed: 0 },
     _accumulator: 0,
     _lastTs: 0,
     _rafId: 0,
+    _detachInput: null,
   };
 
-  /** Advance the simulation by one fixed step. */
+  // Build systems bound to this game.
+  const spawnSystem = createSpawnSystem(game);
+  const movementSystem = createMovementSystem(game);
+  const landingSystem = createLandingSystem(game);
+  const collisionSystem = createCollisionSystem(game);
+  const renderSystem = createRenderSystem(game);
+
+  // Light bookkeeping on gameplay events.
+  bus.on("aircraft:landed", () => {
+    game.stats.landed += 1;
+  });
+  bus.on("aircraft:crashed", () => {
+    game.stats.crashed += 1;
+  });
+
+  /**
+   * Advance the simulation by one fixed step. System order (authoritative):
+   * spawn -> movement (applies drawn paths) -> landing -> collision -> (render
+   * is separate, in the frame callback).
+   */
   function update(dt) {
     game.time += dt;
-    // Radar sweep completes a revolution every ~4 seconds.
     game.sweep = (game.sweep + (dt * Math.PI * 2) / 4) % (Math.PI * 2);
-    // Future systems (movement, collision, spawning) hook in here.
+    if (game.gameOver) return;
+    spawnSystem(dt);
+    movementSystem(dt);
+    landingSystem(dt);
+    collisionSystem(dt);
   }
 
   /** Draw a single frame. */
   function render() {
-    const { ctx, width, height } = game;
+    const { ctx, width: w, height: h } = game;
     if (!ctx) return;
-    drawRadar(ctx, width, height, game.sweep);
+    // Blink phase for proximity warnings (~3 Hz).
+    const blinkPhase = (game.time * 3) % 1;
+    renderSystem(ctx, w, h, blinkPhase);
   }
 
   /** The requestAnimationFrame callback: fixed-step accumulator. */
@@ -74,7 +124,7 @@ export function createGame(options = {}) {
     game._rafId = requestAnimationFrame(frame);
   }
 
-  /** Attach to the DOM, size the canvas, and start the loop. */
+  /** Attach to the DOM, size the canvas, wire input, and start the loop. */
   function start(canvas) {
     if (typeof window === "undefined" || typeof document === "undefined") {
       throw new Error("start() requires a browser environment");
@@ -85,14 +135,20 @@ export function createGame(options = {}) {
     resize();
     window.addEventListener("resize", resize);
 
+    game._detachInput = attachInput(canvas, game);
+
     game.running = true;
     game._lastTs = performance.now() / 1000;
     game._rafId = requestAnimationFrame(frame);
   }
 
-  /** Stop the loop and detach resize handling. */
+  /** Stop the loop and detach handlers. */
   function stop() {
     game.running = false;
+    if (game._detachInput) {
+      game._detachInput();
+      game._detachInput = null;
+    }
     if (typeof window !== "undefined") {
       window.removeEventListener("resize", resize);
       if (game._rafId) cancelAnimationFrame(game._rafId);
@@ -106,83 +162,25 @@ export function createGame(options = {}) {
     const rect = canvas.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     game.dpr = dpr;
-    game.width = rect.width;
-    game.height = rect.height;
+    const newW = Math.max(1, rect.width);
+    const newH = Math.max(1, rect.height);
+    game.width = newW;
+    game.height = newH;
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     // Draw in CSS-pixel coordinates; the transform handles the device scale.
     game.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Rebuild the map centered on the new radar size.
+    game.map = createMap1(newW, newH);
   }
 
   game.start = start;
   game.stop = stop;
   game.resize = resize;
   game.update = update; // exposed for headless/testing
+  game.render = render;
+  game.spawnSystem = spawnSystem; // exposed for seeding/testing
   return game;
-}
-
-/**
- * Draw the CRT radar background: black field, concentric range rings, cross
- * grid, and a rotating sweep line. Pure drawing given a 2D context.
- */
-export function drawRadar(ctx, width, height, sweepAngle) {
-  ctx.clearRect(0, 0, width, height);
-
-  // Dark field.
-  ctx.fillStyle = "#001405";
-  ctx.fillRect(0, 0, width, height);
-
-  const cx = width / 2;
-  const cy = height / 2;
-  const maxR = Math.hypot(width, height) / 2;
-
-  // Grid lines.
-  ctx.strokeStyle = "rgba(57, 255, 20, 0.12)";
-  ctx.lineWidth = 1;
-  const spacing = 40;
-  ctx.beginPath();
-  for (let x = (cx % spacing); x <= width; x += spacing) {
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-  }
-  for (let y = (cy % spacing); y <= height; y += spacing) {
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-  }
-  ctx.stroke();
-
-  // Concentric range rings.
-  ctx.strokeStyle = "rgba(57, 255, 20, 0.28)";
-  for (let r = spacing; r <= maxR; r += spacing * 2) {
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // Center crosshair.
-  ctx.strokeStyle = "rgba(57, 255, 20, 0.45)";
-  ctx.beginPath();
-  ctx.moveTo(cx - 12, cy);
-  ctx.lineTo(cx + 12, cy);
-  ctx.moveTo(cx, cy - 12);
-  ctx.lineTo(cx, cy + 12);
-  ctx.stroke();
-
-  // Sweep line with a faint trailing wedge.
-  const grad = ctx.createLinearGradient(
-    cx,
-    cy,
-    cx + Math.cos(sweepAngle) * maxR,
-    cy + Math.sin(sweepAngle) * maxR
-  );
-  grad.addColorStop(0, "rgba(57, 255, 20, 0.6)");
-  grad.addColorStop(1, "rgba(57, 255, 20, 0)");
-  ctx.strokeStyle = grad;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(cx, cy);
-  ctx.lineTo(cx + Math.cos(sweepAngle) * maxR, cy + Math.sin(sweepAngle) * maxR);
-  ctx.stroke();
 }
 
 // Auto-boot when loaded in a browser as a module script.
