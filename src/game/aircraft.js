@@ -22,6 +22,18 @@
 // and the spawn cadence (spawnSystem.js) lengthened to match the ~4x-longer
 // time-in-airspace. Class ORDERING is preserved: helicopter 7.5 <= light 10 <
 // commercial 17.5 < supersonic 25.
+//
+// FEAT-004 ("make everything smaller"): the whole airport is scaled down by a
+// consistent 0.70 factor (a 30% reduction) for phone readability - runways,
+// helipads, approach cones AND the per-class runwayLengthRequired all shrink by
+// the same 0.70 so every runway a class is meant to use still satisfies
+// runway.length >= runwayLengthRequired. The runwayLengthRequired values below
+// are the shrunk numbers: light 90->63, commercial 190->133, supersonic 220->154
+// (helicopter stays 0, it uses the pad). Ordering light < commercial < supersonic
+// is preserved. The drawn ICON size is shrunk separately in spawnSystem.js by
+// lowering the Render-size multiplier (hitboxRadius*1.3 -> hitboxRadius*0.9, a
+// ~31% smaller icon) WITHOUT changing hitboxRadius/separationRadius, so collision
+// and separation stay exactly as balanced in FEAT-003.
 
 /** Canonical aircraft kind constants. */
 export const AircraftKind = Object.freeze({
@@ -61,7 +73,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     separationRadius: 46,
     wakeSeparation: 0,
     fuelMax: 640,
-    runwayLengthRequired: 90,
+    runwayLengthRequired: 63, // FEAT-004: 90 * 0.70
     passengers: [1, 4],
     color: "#8fff6a",
     landsOnHelipad: false,
@@ -78,7 +90,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     separationRadius: 64,
     wakeSeparation: 90, // trailing traffic must stay well clear of the wake
     fuelMax: 1000,
-    runwayLengthRequired: 190,
+    runwayLengthRequired: 133, // FEAT-004: 190 * 0.70
     passengers: [90, 220],
     color: "#39ff14",
     landsOnHelipad: false,
@@ -112,7 +124,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     separationRadius: 72,
     wakeSeparation: 0,
     fuelMax: 480, // minimal reserve (tightest margin of the four classes)
-    runwayLengthRequired: 220,
+    runwayLengthRequired: 154, // FEAT-004: 220 * 0.70
     passengers: [1, 2],
     color: "#ffd23b",
     landsOnHelipad: false,

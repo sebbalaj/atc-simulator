@@ -24,11 +24,11 @@ import { AIRCRAFT_DEFS, AircraftKind } from "./aircraft.js";
 /** How much the radar range (spawn perimeter) grows per RADAR RANGE purchase. */
 export const RADAR_RANGE_STEP = 60;
 /** How much a runway is lengthened per RUNWAY LENGTHEN purchase (px). */
-export const RUNWAY_LENGTHEN_STEP = 70;
+export const RUNWAY_LENGTHEN_STEP = 49; // FEAT-004: 70 * 0.70
 /** Fraction by which ground crew reduce runway clear-time per STAFFING buy. */
 export const CLEAR_TIME_REDUCTION = 0.3;
 /** New runway length when INFRASTRUCTURE builds one (accepts jets). */
-export const NEW_RUNWAY_LENGTH = 220;
+export const NEW_RUNWAY_LENGTH = 154; // FEAT-004: 220 * 0.70 (>= commercial 133)
 
 /** Minimum runway length that accepts a COMMERCIAL jet (from the class table). */
 export const COMMERCIAL_RUNWAY_LENGTH = AIRCRAFT_DEFS[AircraftKind.COMMERCIAL].runwayLengthRequired;
@@ -149,8 +149,8 @@ export function applyUpgrade(state, id) {
         y: map.center.y + (n % 2 === 0 ? 60 : -60),
         heading: (30 * Math.PI) / 180,
         length: NEW_RUNWAY_LENGTH,
-        width: 14,
-        approach: { tolerance: (28 * Math.PI) / 180, coneLength: 190 },
+        width: 10, // FEAT-004: 14 -> 10
+        approach: { tolerance: (28 * Math.PI) / 180, coneLength: 133 }, // FEAT-004: 190 -> 133
         clearTime: 3,
       });
       map.runways.push(runway);
@@ -176,7 +176,7 @@ export function applyUpgrade(state, id) {
         id: "H" + n,
         x: map.center.x - 80 + n * 20,
         y: map.center.y - 110,
-        radius: 15,
+        radius: 11, // FEAT-004: 15 -> 11
       };
       map.helipads.push(pad);
       if (!map.helipad) map.helipad = pad;

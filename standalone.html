@@ -972,6 +972,18 @@ body {
           // and the spawn cadence (spawnSystem.js) lengthened to match the ~4x-longer
           // time-in-airspace. Class ORDERING is preserved: helicopter 7.5 <= light 10 <
           // commercial 17.5 < supersonic 25.
+          //
+          // FEAT-004 ("make everything smaller"): the whole airport is scaled down by a
+          // consistent 0.70 factor (a 30% reduction) for phone readability - runways,
+          // helipads, approach cones AND the per-class runwayLengthRequired all shrink by
+          // the same 0.70 so every runway a class is meant to use still satisfies
+          // runway.length >= runwayLengthRequired. The runwayLengthRequired values below
+          // are the shrunk numbers: light 90->63, commercial 190->133, supersonic 220->154
+          // (helicopter stays 0, it uses the pad). Ordering light < commercial < supersonic
+          // is preserved. The drawn ICON size is shrunk separately in spawnSystem.js by
+          // lowering the Render-size multiplier (hitboxRadius*1.3 -> hitboxRadius*0.9, a
+          // ~31% smaller icon) WITHOUT changing hitboxRadius/separationRadius, so collision
+          // and separation stay exactly as balanced in FEAT-003.
 
           /** Canonical aircraft kind constants. */
           const AircraftKind = Object.freeze({
@@ -1011,7 +1023,7 @@ body {
               separationRadius: 46,
               wakeSeparation: 0,
               fuelMax: 640,
-              runwayLengthRequired: 90,
+              runwayLengthRequired: 63, // FEAT-004: 90 * 0.70
               passengers: [1, 4],
               color: "#8fff6a",
               landsOnHelipad: false,
@@ -1028,7 +1040,7 @@ body {
               separationRadius: 64,
               wakeSeparation: 90, // trailing traffic must stay well clear of the wake
               fuelMax: 1000,
-              runwayLengthRequired: 190,
+              runwayLengthRequired: 133, // FEAT-004: 190 * 0.70
               passengers: [90, 220],
               color: "#39ff14",
               landsOnHelipad: false,
@@ -1062,7 +1074,7 @@ body {
               separationRadius: 72,
               wakeSeparation: 0,
               fuelMax: 480, // minimal reserve (tightest margin of the four classes)
-              runwayLengthRequired: 220,
+              runwayLengthRequired: 154, // FEAT-004: 220 * 0.70
               passengers: [1, 2],
               color: "#ffd23b",
               landsOnHelipad: false,
@@ -1488,10 +1500,12 @@ body {
               y: opts.y,
               heading: opts.heading,
               length: opts.length,
-              width: opts.width ?? 14,
+              // FEAT-004: default width/coneLength shrunk by 0.70 (14->10, 180->126) to
+              // match the whole-airport scale-down. Tolerance (28deg) stays forgiving.
+              width: opts.width ?? 10,
               approach: {
                 tolerance: opts.approach?.tolerance ?? (28 * Math.PI) / 180,
-                coneLength: opts.approach?.coneLength ?? 180,
+                coneLength: opts.approach?.coneLength ?? 126,
               },
               clearTime: opts.clearTime ?? 3,
               // Mutable state.
@@ -1522,9 +1536,10 @@ body {
               x: cx,
               y: cy,
               heading: 0, // landing toward +x (east)
-              length: 230,
-              width: 14,
-              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 200 },
+              // FEAT-004: shrunk 0.70 (230->161, width 14->10, cone 200->140).
+              length: 161,
+              width: 10,
+              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 140 },
               clearTime: 3,
             });
 
@@ -1533,9 +1548,10 @@ body {
               x: cx,
               y: cy,
               heading: (55 * Math.PI) / 180, // crosses runway A
-              length: 180,
-              width: 14,
-              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 180 },
+              // FEAT-004: shrunk 0.70 (180->126, width 14->10, cone 180->126).
+              length: 126,
+              width: 10,
+              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 126 },
               clearTime: 3,
             });
 
@@ -1543,7 +1559,7 @@ body {
               id: "H1",
               x: cx + 70,
               y: cy - 90,
-              radius: 16,
+              radius: 11, // FEAT-004: shrunk 0.70 (16 -> 11)
             };
 
             // Hospital POI: medical-evac helicopters must be routed directly over this
@@ -2785,9 +2801,10 @@ body {
               x: cx,
               y: bigY,
               heading: 90 * DEG, // landing toward +y (south), into the field from the top
-              length: 240,
-              width: 15,
-              approach: { tolerance: 28 * DEG, coneLength: 200 },
+              // FEAT-004: shrunk 0.70 (240->168, width 15->11, cone 200->140).
+              length: 168,
+              width: 11,
+              approach: { tolerance: 28 * DEG, coneLength: 140 },
               clearTime: 3,
             });
 
@@ -2798,13 +2815,14 @@ body {
               x: cx,
               y: smallY,
               heading: -90 * DEG, // landing toward -y (north), into the field from below
-              length: 150,
-              width: 12,
-              approach: { tolerance: 28 * DEG, coneLength: 170 },
+              // FEAT-004: shrunk 0.70 (150->105, width 12->8, cone 170->119).
+              length: 105,
+              width: 8,
+              approach: { tolerance: 28 * DEG, coneLength: 119 },
               clearTime: 3,
             });
 
-            const helipad = { id: "H1", x: cx + width * 0.3, y: cy, radius: 15 };
+            const helipad = { id: "H1", x: cx + width * 0.3, y: cy, radius: 11 }; // FEAT-004: 15 -> 11
             const hospital = { id: "HOSP", x: cx - width * 0.3, y: cy, radius: 22 };
             const holdFix = { id: "HOLD1", x: cx + width * 0.28, y: height * 0.5, radius: 34 };
 
@@ -2845,9 +2863,10 @@ body {
               x: cx,
               y: height * 0.32,
               heading: 0,
-              length: 250,
-              width: 16,
-              approach: { tolerance: 28 * DEG, coneLength: 210 },
+              // FEAT-004: shrunk 0.70 (250->175, width 16->11, cone 210->147).
+              length: 175,
+              width: 11,
+              approach: { tolerance: 28 * DEG, coneLength: 147 },
               clearTime: 3,
             });
 
@@ -2859,16 +2878,17 @@ body {
               x: cx,
               y: height * 0.74,
               heading: 10 * DEG,
-              length: 170,
-              width: 16,
-              approach: { tolerance: 26 * DEG, coneLength: 160 },
+              // FEAT-004: shrunk 0.70 (170->119, width 16->11, cone 160->112).
+              length: 119,
+              width: 11,
+              approach: { tolerance: 26 * DEG, coneLength: 112 },
               clearTime: 4,
             });
             makeMovingRunway(carrier, { axis: 0, amplitude: width * 0.18, speed: 16 });
 
             // Offshore helipads out over the water (bottom corners).
-            const pad1 = { id: "OSP1", x: width * 0.2, y: height * 0.88, radius: 15, offshore: true };
-            const pad2 = { id: "OSP2", x: width * 0.8, y: height * 0.88, radius: 15, offshore: true };
+            const pad1 = { id: "OSP1", x: width * 0.2, y: height * 0.88, radius: 11, offshore: true }; // FEAT-004: 15 -> 11
+            const pad2 = { id: "OSP2", x: width * 0.8, y: height * 0.88, radius: 11, offshore: true }; // FEAT-004: 15 -> 11
 
             const hospital = { id: "HOSP", x: width * 0.16, y: height * 0.4, radius: 22 };
             const holdFix = { id: "HOLD1", x: width * 0.82, y: height * 0.5, radius: 34 };
@@ -2917,15 +2937,16 @@ body {
                   x: cx,
                   y: topY + spacing * i,
                   heading: 0, // all parallel, landing toward +x (east)
-                  length: 230,
-                  width: 14,
-                  approach: { tolerance: 20 * DEG, coneLength: 190 },
+                  // FEAT-004: shrunk 0.70 (230->161, width 14->10, cone 190->133).
+                  length: 161,
+                  width: 10,
+                  approach: { tolerance: 20 * DEG, coneLength: 133 },
                   clearTime: 2.5,
                 })
               );
             }
 
-            const helipad = { id: "H1", x: width * 0.12, y: cy, radius: 15 };
+            const helipad = { id: "H1", x: width * 0.12, y: cy, radius: 11 }; // FEAT-004: 15 -> 11
             const hospital = { id: "HOSP", x: width * 0.88, y: height * 0.16, radius: 22 };
             const holdFix = { id: "HOLD1", x: width * 0.85, y: height * 0.84, radius: 34 };
 
@@ -3020,8 +3041,8 @@ body {
               x: opts.x ?? 0,
               y: opts.y ?? 0,
               heading: opts.heading ?? 0,
-              length: opts.length ?? 170,
-              width: opts.width ?? 16,
+              length: opts.length ?? 119, // FEAT-004: 170 -> 119 (carrier scale)
+              width: opts.width ?? 11, // FEAT-004: 16 -> 11
             };
             return makeMovingRunway(runway, {
               axis: opts.axis ?? 0,
@@ -3075,11 +3096,11 @@ body {
           /** How much the radar range (spawn perimeter) grows per RADAR RANGE purchase. */
           const RADAR_RANGE_STEP = 60;
           /** How much a runway is lengthened per RUNWAY LENGTHEN purchase (px). */
-          const RUNWAY_LENGTHEN_STEP = 70;
+          const RUNWAY_LENGTHEN_STEP = 49; // FEAT-004: 70 * 0.70
           /** Fraction by which ground crew reduce runway clear-time per STAFFING buy. */
           const CLEAR_TIME_REDUCTION = 0.3;
           /** New runway length when INFRASTRUCTURE builds one (accepts jets). */
-          const NEW_RUNWAY_LENGTH = 220;
+          const NEW_RUNWAY_LENGTH = 154; // FEAT-004: 220 * 0.70 (>= commercial 133)
 
           /** Minimum runway length that accepts a COMMERCIAL jet (from the class table). */
           const COMMERCIAL_RUNWAY_LENGTH = AIRCRAFT_DEFS[AircraftKind.COMMERCIAL].runwayLengthRequired;
@@ -3200,8 +3221,8 @@ body {
                   y: map.center.y + (n % 2 === 0 ? 60 : -60),
                   heading: (30 * Math.PI) / 180,
                   length: NEW_RUNWAY_LENGTH,
-                  width: 14,
-                  approach: { tolerance: (28 * Math.PI) / 180, coneLength: 190 },
+                  width: 10, // FEAT-004: 14 -> 10
+                  approach: { tolerance: (28 * Math.PI) / 180, coneLength: 133 }, // FEAT-004: 190 -> 133
                   clearTime: 3,
                 });
                 map.runways.push(runway);
@@ -3227,7 +3248,7 @@ body {
                   id: "H" + n,
                   x: map.center.x - 80 + n * 20,
                   y: map.center.y - 110,
-                  radius: 15,
+                  radius: 11, // FEAT-004: 15 -> 11
                 };
                 map.helipads.push(pad);
                 if (!map.helipad) map.helipad = pad;
@@ -4255,7 +4276,11 @@ body {
               world.addComponent(
                 id,
                 Components.Render,
-                Render({ shape: kind, color: def.color, size: def.hitboxRadius * 1.3 })
+                // FEAT-004: shrink the drawn icon ~31% (1.3 -> 0.9 multiplier) for phone
+                // readability without touching hitboxRadius/separationRadius, so collision
+                // and separation stay exactly as balanced in FEAT-003. Class size ordering
+                // is preserved (it still scales with each class's hitboxRadius).
+                Render({ shape: kind, color: def.color, size: def.hitboxRadius * 0.9 })
               );
               world.addComponent(id, Components.Fuel, Fuel(def.fuelMax));
               world.addComponent(id, Components.Label, Label(makeCallsign(kind)));

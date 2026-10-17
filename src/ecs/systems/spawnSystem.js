@@ -88,7 +88,11 @@ export function createSpawnSystem(game) {
     world.addComponent(
       id,
       Components.Render,
-      Render({ shape: kind, color: def.color, size: def.hitboxRadius * 1.3 })
+      // FEAT-004: shrink the drawn icon ~31% (1.3 -> 0.9 multiplier) for phone
+      // readability without touching hitboxRadius/separationRadius, so collision
+      // and separation stay exactly as balanced in FEAT-003. Class size ordering
+      // is preserved (it still scales with each class's hitboxRadius).
+      Render({ shape: kind, color: def.color, size: def.hitboxRadius * 0.9 })
     );
     world.addComponent(id, Components.Fuel, Fuel(def.fuelMax));
     world.addComponent(id, Components.Label, Label(makeCallsign(kind)));

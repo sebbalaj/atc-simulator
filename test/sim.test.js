@@ -143,7 +143,7 @@ test("runway alignment: findLandingTarget picks the runway for an aligned approa
 
 test("runway length: short runway rejects a class that needs a long one", () => {
   const map = createMap1(400, 600);
-  // runway B is 180 long; SUPERSONIC needs 220.
+  // runway B is 126 long (FEAT-004 shrink); SUPERSONIC needs 154.
   const shortRunway = map.runways[1];
   const supersonic = getAircraftDef(AircraftKind.SUPERSONIC);
   const thr = runwayThreshold(shortRunway);

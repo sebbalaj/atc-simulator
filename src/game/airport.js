@@ -161,10 +161,12 @@ export function createRunway(opts) {
     y: opts.y,
     heading: opts.heading,
     length: opts.length,
-    width: opts.width ?? 14,
+    // FEAT-004: default width/coneLength shrunk by 0.70 (14->10, 180->126) to
+    // match the whole-airport scale-down. Tolerance (28deg) stays forgiving.
+    width: opts.width ?? 10,
     approach: {
       tolerance: opts.approach?.tolerance ?? (28 * Math.PI) / 180,
-      coneLength: opts.approach?.coneLength ?? 180,
+      coneLength: opts.approach?.coneLength ?? 126,
     },
     clearTime: opts.clearTime ?? 3,
     // Mutable state.
@@ -195,9 +197,10 @@ export function createMap1(width, height) {
     x: cx,
     y: cy,
     heading: 0, // landing toward +x (east)
-    length: 230,
-    width: 14,
-    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 200 },
+    // FEAT-004: shrunk 0.70 (230->161, width 14->10, cone 200->140).
+    length: 161,
+    width: 10,
+    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 140 },
     clearTime: 3,
   });
 
@@ -206,9 +209,10 @@ export function createMap1(width, height) {
     x: cx,
     y: cy,
     heading: (55 * Math.PI) / 180, // crosses runway A
-    length: 180,
-    width: 14,
-    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 180 },
+    // FEAT-004: shrunk 0.70 (180->126, width 14->10, cone 180->126).
+    length: 126,
+    width: 10,
+    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 126 },
     clearTime: 3,
   });
 
@@ -216,7 +220,7 @@ export function createMap1(width, height) {
     id: "H1",
     x: cx + 70,
     y: cy - 90,
-    radius: 16,
+    radius: 11, // FEAT-004: shrunk 0.70 (16 -> 11)
   };
 
   // Hospital POI: medical-evac helicopters must be routed directly over this

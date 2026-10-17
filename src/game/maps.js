@@ -91,9 +91,10 @@ export function createMap2(width, height) {
     x: cx,
     y: bigY,
     heading: 90 * DEG, // landing toward +y (south), into the field from the top
-    length: 240,
-    width: 15,
-    approach: { tolerance: 28 * DEG, coneLength: 200 },
+    // FEAT-004: shrunk 0.70 (240->168, width 15->11, cone 200->140).
+    length: 168,
+    width: 11,
+    approach: { tolerance: 28 * DEG, coneLength: 140 },
     clearTime: 3,
   });
 
@@ -104,13 +105,14 @@ export function createMap2(width, height) {
     x: cx,
     y: smallY,
     heading: -90 * DEG, // landing toward -y (north), into the field from below
-    length: 150,
-    width: 12,
-    approach: { tolerance: 28 * DEG, coneLength: 170 },
+    // FEAT-004: shrunk 0.70 (150->105, width 12->8, cone 170->119).
+    length: 105,
+    width: 8,
+    approach: { tolerance: 28 * DEG, coneLength: 119 },
     clearTime: 3,
   });
 
-  const helipad = { id: "H1", x: cx + width * 0.3, y: cy, radius: 15 };
+  const helipad = { id: "H1", x: cx + width * 0.3, y: cy, radius: 11 }; // FEAT-004: 15 -> 11
   const hospital = { id: "HOSP", x: cx - width * 0.3, y: cy, radius: 22 };
   const holdFix = { id: "HOLD1", x: cx + width * 0.28, y: height * 0.5, radius: 34 };
 
@@ -151,9 +153,10 @@ export function createMap3(width, height) {
     x: cx,
     y: height * 0.32,
     heading: 0,
-    length: 250,
-    width: 16,
-    approach: { tolerance: 28 * DEG, coneLength: 210 },
+    // FEAT-004: shrunk 0.70 (250->175, width 16->11, cone 210->147).
+    length: 175,
+    width: 11,
+    approach: { tolerance: 28 * DEG, coneLength: 147 },
     clearTime: 3,
   });
 
@@ -165,16 +168,17 @@ export function createMap3(width, height) {
     x: cx,
     y: height * 0.74,
     heading: 10 * DEG,
-    length: 170,
-    width: 16,
-    approach: { tolerance: 26 * DEG, coneLength: 160 },
+    // FEAT-004: shrunk 0.70 (170->119, width 16->11, cone 160->112).
+    length: 119,
+    width: 11,
+    approach: { tolerance: 26 * DEG, coneLength: 112 },
     clearTime: 4,
   });
   makeMovingRunway(carrier, { axis: 0, amplitude: width * 0.18, speed: 16 });
 
   // Offshore helipads out over the water (bottom corners).
-  const pad1 = { id: "OSP1", x: width * 0.2, y: height * 0.88, radius: 15, offshore: true };
-  const pad2 = { id: "OSP2", x: width * 0.8, y: height * 0.88, radius: 15, offshore: true };
+  const pad1 = { id: "OSP1", x: width * 0.2, y: height * 0.88, radius: 11, offshore: true }; // FEAT-004: 15 -> 11
+  const pad2 = { id: "OSP2", x: width * 0.8, y: height * 0.88, radius: 11, offshore: true }; // FEAT-004: 15 -> 11
 
   const hospital = { id: "HOSP", x: width * 0.16, y: height * 0.4, radius: 22 };
   const holdFix = { id: "HOLD1", x: width * 0.82, y: height * 0.5, radius: 34 };
@@ -223,15 +227,16 @@ export function createMap4(width, height) {
         x: cx,
         y: topY + spacing * i,
         heading: 0, // all parallel, landing toward +x (east)
-        length: 230,
-        width: 14,
-        approach: { tolerance: 20 * DEG, coneLength: 190 },
+        // FEAT-004: shrunk 0.70 (230->161, width 14->10, cone 190->133).
+        length: 161,
+        width: 10,
+        approach: { tolerance: 20 * DEG, coneLength: 133 },
         clearTime: 2.5,
       })
     );
   }
 
-  const helipad = { id: "H1", x: width * 0.12, y: cy, radius: 15 };
+  const helipad = { id: "H1", x: width * 0.12, y: cy, radius: 11 }; // FEAT-004: 15 -> 11
   const hospital = { id: "HOSP", x: width * 0.88, y: height * 0.16, radius: 22 };
   const holdFix = { id: "HOLD1", x: width * 0.85, y: height * 0.84, radius: 34 };
 
@@ -326,8 +331,8 @@ export function makeMovingRunwayForTest(opts = {}) {
     x: opts.x ?? 0,
     y: opts.y ?? 0,
     heading: opts.heading ?? 0,
-    length: opts.length ?? 170,
-    width: opts.width ?? 16,
+    length: opts.length ?? 119, // FEAT-004: 170 -> 119 (carrier scale)
+    width: opts.width ?? 11, // FEAT-004: 16 -> 11
   };
   return makeMovingRunway(runway, {
     axis: opts.axis ?? 0,
