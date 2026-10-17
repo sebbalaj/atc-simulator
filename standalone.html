@@ -945,6 +945,15 @@ body {
           //   HELICOPTER:       slowest, lands on the helipad from any heading.
           //   SUPERSONIC (mil): fastest, tiny fuel margin, hard cap on per-point turn
           //                     angle (cannot make sharp corners).
+          //
+          // FEAT-003 tuning: cruise speeds were cut to ~0.44x (light 90->40, heli 70->30,
+          // commercial 160->70, supersonic 230->100) so aircraft read at a controllable
+          // pace instead of zooming across the radar. Because fuelMax is measured in
+          // SECONDS of flight, the reachable distance per second shrank with the speed
+          // cut, so fuelMax was scaled up ~2.3x (keeping SUPERSONIC's margin tightest) and
+          // the economy efficiency window was widened to match the longer time-in-airspace
+          // (see economy.js). Class ORDERING is preserved: helicopter <= light <
+          // commercial < supersonic.
 
           /** Canonical aircraft kind constants. */
           const AircraftKind = Object.freeze({
@@ -977,13 +986,13 @@ body {
             [AircraftKind.LIGHT]: {
               kind: AircraftKind.LIGHT,
               name: "Light",
-              speed: 90,
+              speed: 40,
               turnRateMax: Math.PI, // ~180 deg/s: very nimble
               maxTurnAngle: (150 * Math.PI) / 180, // can nearly reverse at a point
               hitboxRadius: 7,
               separationRadius: 46,
               wakeSeparation: 0,
-              fuelMax: 90,
+              fuelMax: 200,
               runwayLengthRequired: 90,
               passengers: [1, 4],
               color: "#8fff6a",
@@ -994,13 +1003,13 @@ body {
             [AircraftKind.COMMERCIAL]: {
               kind: AircraftKind.COMMERCIAL,
               name: "Commercial",
-              speed: 160,
+              speed: 70,
               turnRateMax: (70 * Math.PI) / 180, // wide, airliner-like turns
               maxTurnAngle: (70 * Math.PI) / 180,
               hitboxRadius: 11,
               separationRadius: 64,
               wakeSeparation: 90, // trailing traffic must stay well clear of the wake
-              fuelMax: 150,
+              fuelMax: 340,
               runwayLengthRequired: 190,
               passengers: [90, 220],
               color: "#39ff14",
@@ -1011,13 +1020,13 @@ body {
             [AircraftKind.HELICOPTER]: {
               kind: AircraftKind.HELICOPTER,
               name: "Helicopter",
-              speed: 70,
+              speed: 30,
               turnRateMax: Math.PI, // can pivot freely
               maxTurnAngle: Math.PI, // no corner restriction
               hitboxRadius: 8,
               separationRadius: 42,
               wakeSeparation: 0,
-              fuelMax: 110,
+              fuelMax: 250,
               runwayLengthRequired: 0, // uses the helipad, not a runway
               passengers: [1, 8],
               color: "#6ad1ff",
@@ -1028,13 +1037,13 @@ body {
             [AircraftKind.SUPERSONIC]: {
               kind: AircraftKind.SUPERSONIC,
               name: "Supersonic",
-              speed: 230,
+              speed: 100,
               turnRateMax: (45 * Math.PI) / 180, // sluggish to turn at speed
               maxTurnAngle: (35 * Math.PI) / 180, // refuses sharp corners
               hitboxRadius: 9,
               separationRadius: 72,
               wakeSeparation: 0,
-              fuelMax: 70, // minimal reserve
+              fuelMax: 150, // minimal reserve (tightest margin of the four classes)
               runwayLengthRequired: 220,
               passengers: [1, 2],
               color: "#ffd23b",
@@ -2293,8 +2302,13 @@ body {
           // linearly toward EFFICIENCY_MIN by EFFICIENCY_SLOW_TIME.
           const EFFICIENCY_MAX = 1.5;
           const EFFICIENCY_MIN = 0.8;
-          const EFFICIENCY_FULL_TIME = 20; // seconds
-          const EFFICIENCY_SLOW_TIME = 120; // seconds
+          // FEAT-003: aircraft cruise speeds were cut ~2.3x, so the same route now takes
+          // proportionally longer to fly. The efficiency window is scaled up to match
+          // (20->40 full-bonus, 120->240 floor) so a promptly-handled slower plane still
+          // earns the full EFFICIENCY_MAX and the decay happens over a comparable
+          // player-difficulty window rather than expiring before a normal route finishes.
+          const EFFICIENCY_FULL_TIME = 40; // seconds
+          const EFFICIENCY_SLOW_TIME = 240; // seconds
 
           /**
            * The efficiency multiplier for a given time in the airspace (seconds). Shorter
@@ -3919,8 +3933,12 @@ body {
            * the field never becomes impossible. Pure function.
            */
           function spawnInterval(shiftTime) {
-            const base = 6.5; // seconds between spawns at the start
-            const floor = 2.2; // never faster than this
+            // FEAT-003: aircraft now cruise ~2.3x slower, so each plane lingers in the
+            // airspace longer. For the same spawn rate that raises the standing aircraft
+            // count, so the base and floor intervals are lengthened (6.5->8.5, 2.2->3.2)
+            // to keep peak crowding comparable to the faster-aircraft balance.
+            const base = 8.5; // seconds between spawns at the start
+            const floor = 3.2; // never faster than this
             const ramp = Math.min(1, shiftTime / 300); // fully ramped after 5 minutes
             return base - (base - floor) * ramp;
           }

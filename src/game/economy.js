@@ -31,8 +31,13 @@ export const PER_PASSENGER = Object.freeze({
 // linearly toward EFFICIENCY_MIN by EFFICIENCY_SLOW_TIME.
 export const EFFICIENCY_MAX = 1.5;
 export const EFFICIENCY_MIN = 0.8;
-export const EFFICIENCY_FULL_TIME = 20; // seconds
-export const EFFICIENCY_SLOW_TIME = 120; // seconds
+// FEAT-003: aircraft cruise speeds were cut ~2.3x, so the same route now takes
+// proportionally longer to fly. The efficiency window is scaled up to match
+// (20->40 full-bonus, 120->240 floor) so a promptly-handled slower plane still
+// earns the full EFFICIENCY_MAX and the decay happens over a comparable
+// player-difficulty window rather than expiring before a normal route finishes.
+export const EFFICIENCY_FULL_TIME = 40; // seconds
+export const EFFICIENCY_SLOW_TIME = 240; // seconds
 
 /**
  * The efficiency multiplier for a given time in the airspace (seconds). Shorter

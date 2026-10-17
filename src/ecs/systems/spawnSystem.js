@@ -30,8 +30,12 @@ const CALLSIGN_PREFIX = {
  * the field never becomes impossible. Pure function.
  */
 export function spawnInterval(shiftTime) {
-  const base = 6.5; // seconds between spawns at the start
-  const floor = 2.2; // never faster than this
+  // FEAT-003: aircraft now cruise ~2.3x slower, so each plane lingers in the
+  // airspace longer. For the same spawn rate that raises the standing aircraft
+  // count, so the base and floor intervals are lengthened (6.5->8.5, 2.2->3.2)
+  // to keep peak crowding comparable to the faster-aircraft balance.
+  const base = 8.5; // seconds between spawns at the start
+  const floor = 3.2; // never faster than this
   const ramp = Math.min(1, shiftTime / 300); // fully ramped after 5 minutes
   return base - (base - floor) * ramp;
 }

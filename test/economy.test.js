@@ -8,6 +8,10 @@ import {
   computeLandingRevenue,
   efficiencyMultiplier,
   createBank,
+  EFFICIENCY_MAX,
+  EFFICIENCY_MIN,
+  EFFICIENCY_FULL_TIME,
+  EFFICIENCY_SLOW_TIME,
 } from "../src/game/economy.js";
 import {
   createReputation,
@@ -62,8 +66,39 @@ test("revenue: a shorter time in the airspace earns an efficiency bonus", () => 
   // The multiplier itself is monotonically non-increasing with time.
   assert.ok(efficiencyMultiplier(5) >= efficiencyMultiplier(60));
   assert.ok(efficiencyMultiplier(60) >= efficiencyMultiplier(200));
-  // Full bonus at/under the threshold; floor far out.
-  assert.equal(efficiencyMultiplier(0), efficiencyMultiplier(20));
+  // Full bonus at/under the full-bonus threshold; floor far out. These
+  // reference the tunable constants (not magic numbers) so the relationship
+  // holds regardless of the FEAT-003 retune.
+  assert.equal(efficiencyMultiplier(0), efficiencyMultiplier(EFFICIENCY_FULL_TIME));
+});
+
+test("efficiency: retuned thresholds still yield MAX at t=0 and MIN at/after slow-time", () => {
+  // The curve must start at the full bonus and bottom out at the floor at the
+  // (now wider) slow-time window. Tests the math/relationship, not the specific
+  // retuned magnitudes.
+  assert.equal(efficiencyMultiplier(0), EFFICIENCY_MAX, "full bonus at t=0");
+  assert.equal(
+    efficiencyMultiplier(EFFICIENCY_FULL_TIME),
+    EFFICIENCY_MAX,
+    "full bonus still at the full-time threshold"
+  );
+  assert.equal(
+    efficiencyMultiplier(EFFICIENCY_SLOW_TIME),
+    EFFICIENCY_MIN,
+    "floor reached at the slow-time threshold"
+  );
+  assert.equal(
+    efficiencyMultiplier(EFFICIENCY_SLOW_TIME + 1000),
+    EFFICIENCY_MIN,
+    "clamped at the floor well past slow-time"
+  );
+  // Midpoint of the decay band sits strictly between floor and max.
+  const mid = (EFFICIENCY_FULL_TIME + EFFICIENCY_SLOW_TIME) / 2;
+  const midMult = efficiencyMultiplier(mid);
+  assert.ok(midMult < EFFICIENCY_MAX && midMult > EFFICIENCY_MIN, "decays in between");
+  // Sanity: the full-bonus window is wide enough that a promptly-handled plane
+  // (landed within the full-time window) earns the full multiplier.
+  assert.ok(EFFICIENCY_FULL_TIME >= 30, "full-bonus window scaled up for slower aircraft");
 });
 
 test("bank: credit, debit, and canAfford behave correctly", () => {

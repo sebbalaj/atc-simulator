@@ -193,6 +193,22 @@ test("turn-angle: SUPERSONIC rejects/clamps an over-sharp corner", () => {
   assert.ok(clampedRes.ok, "clamped route is now flyable");
 });
 
+test("speed ordering: helicopter <= light < commercial < supersonic", () => {
+  // FEAT-003 cut absolute cruise speeds but must preserve the class ordering.
+  const heli = getAircraftDef(AircraftKind.HELICOPTER).speed;
+  const light = getAircraftDef(AircraftKind.LIGHT).speed;
+  const commercial = getAircraftDef(AircraftKind.COMMERCIAL).speed;
+  const supersonic = getAircraftDef(AircraftKind.SUPERSONIC).speed;
+
+  assert.ok(heli <= light, "helicopter is not faster than the light aircraft");
+  assert.ok(light < commercial, "light is slower than commercial");
+  assert.ok(commercial < supersonic, "commercial is slower than supersonic");
+
+  // The retune kept speeds in a controllable band (no class zooms across the
+  // radar). Guards against a future regression back to the old fast values.
+  assert.ok(supersonic <= 120, "supersonic stays in the slowed-down band");
+});
+
 test("gentle turns within the SUPERSONIC limit are accepted", () => {
   const supersonic = getAircraftDef(AircraftKind.SUPERSONIC);
   // ~20-degree bend, under the ~35-degree supersonic cap.
