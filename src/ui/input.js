@@ -23,6 +23,7 @@ import {
   holdingPatternPoints,
   isOverHospital,
   routePassesHospital,
+  approachHeadingFromPath,
 } from "../game/airport.js";
 import { EmergencyType } from "../game/emergencies.js";
 
@@ -181,10 +182,9 @@ export function finalizePath(game, id, points) {
 
   const def = getAircraftDef(ac.kind);
 
-  // Approach direction at the drawn endpoint.
-  const end = points[points.length - 1];
-  const prev = points[points.length - 2];
-  const approachHeading = Math.atan2(end.y - prev.y, end.x - prev.x);
+  // Approach direction at the drawn endpoint, averaged over the path tail so a
+  // hand-drawn / touch wobble on the final segment does not throw it off.
+  const approachHeading = approachHeadingFromPath(points);
 
   // Medical-evac: if the DRAWN route passes over the hospital POI, satisfy the
   // overflight gate immediately (routePassesHospital over the polyline) rather

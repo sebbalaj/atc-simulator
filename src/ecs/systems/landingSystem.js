@@ -14,6 +14,7 @@ import {
   runwayFarEnd,
   isRunwayClear,
   occupyRunway,
+  approachHeadingFromPath,
 } from "../../game/airport.js";
 import { isApproachDirectionValid } from "../../game/weather.js";
 import { isMedicalLandingAllowed, EmergencyType } from "../../game/emergencies.js";
@@ -24,21 +25,21 @@ export function createLandingSystem(game) {
 
   function endpointAndHeading(path, t) {
     // Prefer the built polyline's tail for an accurate endpoint + direction.
+    // The approach heading is averaged over the path tail (not just the last
+    // two samples) so it matches the forgiving snap logic in input.finalizePath.
     if (path.built && path.built.points.length >= 2) {
       const pts = path.built.points;
       const end = pts[pts.length - 1];
-      const prev = pts[pts.length - 2];
       return {
         point: { x: end.x, y: end.y },
-        heading: Math.atan2(end.y - prev.y, end.x - prev.x),
+        heading: approachHeadingFromPath(pts),
       };
     }
     if (path.points && path.points.length >= 2) {
       const end = path.points[path.points.length - 1];
-      const prev = path.points[path.points.length - 2];
       return {
         point: { x: end.x, y: end.y },
-        heading: Math.atan2(end.y - prev.y, end.x - prev.x),
+        heading: approachHeadingFromPath(path.points),
       };
     }
     return { point: { x: t.x, y: t.y }, heading: t.heading };

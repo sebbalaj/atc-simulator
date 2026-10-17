@@ -26,6 +26,40 @@ export function angleDifference(a, b) {
 }
 
 /**
+ * Robustly derive the travel direction (radians) at the END of a drawn polyline.
+ * A hand-drawn / touch path wobbles on its final segment, so taking atan2 of
+ * only the last two points is noisy and can reject an otherwise-good approach.
+ * Instead, walk back from the endpoint accumulating segments until we have
+ * covered at least `tailLength` world-px (or run out of points), and return the
+ * direction from that earlier anchor to the endpoint. This averages out the last
+ * bit of jitter while still reflecting the final inbound course.
+ *
+ * Pure function. Falls back to the last-two-point heading for very short paths.
+ * @param {Array<{x:number,y:number}>} points
+ * @param {number} [tailLength] world-px of path tail to average over (default 32)
+ * @returns {number} heading in radians (atan2 convention)
+ */
+export function approachHeadingFromPath(points, tailLength = 32) {
+  if (!points || points.length < 2) return 0;
+  const end = points[points.length - 1];
+  // Walk backward until the straight-line distance from the anchor to the end
+  // reaches tailLength, or we exhaust the path.
+  let anchor = points[points.length - 2];
+  for (let i = points.length - 2; i >= 0; i--) {
+    anchor = points[i];
+    if (Math.hypot(end.x - anchor.x, end.y - anchor.y) >= tailLength) break;
+  }
+  const dx = end.x - anchor.x;
+  const dy = end.y - anchor.y;
+  if (dx === 0 && dy === 0) {
+    // Degenerate (anchor == end): fall back to the last distinct segment.
+    const prev = points[points.length - 2];
+    return Math.atan2(end.y - prev.y, end.x - prev.x);
+  }
+  return Math.atan2(dy, dx);
+}
+
+/**
  * The world-space touchdown threshold of a runway: the point where an inbound
  * aircraft first meets the runway, i.e. the up-wind end relative to the landing
  * direction. Planes roll from here toward the far end.
@@ -78,16 +112,27 @@ export function isRunwayAligned(runway, endpoint, approachHeading, aircraftDef) 
   const along = dx * Math.cos(runway.heading) + dy * Math.sin(runway.heading);
   const lateral = -dx * Math.sin(runway.heading) + dy * Math.cos(runway.heading);
 
-  // behind = distance on the inbound side of the threshold (positive).
+  // behind = distance on the inbound side of the threshold (positive). An
+  // endpoint ON the runway has negative `behind` (it is past the threshold,
+  // toward the far/stop end).
   const behind = -along;
   const coneLength = runway.approach.coneLength;
-  // Allow a small overrun past the threshold so a plane that has just reached
-  // the numbers still counts as landing.
-  const withinDepth = behind >= -runway.length * 0.5 && behind <= coneLength;
+  // Accept an endpoint anywhere from well behind the threshold (deep in the
+  // approach cone) THROUGH the far/stop end of the runway. "Draw the line to
+  // the end of the runway" literally puts the endpoint at the far end, where
+  // behind = -runway.length; the old window (behind >= -length*0.5) rejected
+  // that. Allow a small margin (one runway width) past the far end so landing
+  // right on the numbers / a hair beyond still counts.
+  const farMargin = runway.width;
+  const withinDepth = behind >= -(runway.length + farMargin) && behind <= coneLength;
 
-  // Lateral half-width of the cone at this depth (widens with tolerance).
+  // Lateral half-width of the cone at this depth. Widen with the angular
+  // tolerance deep in the cone, but keep a generous minimum half-width near the
+  // strip so a slightly-off-centerline endpoint on a phone still snaps. The
+  // minimum scales with runway width (2.5x) so wider strips stay forgiving too.
   const depthForWidth = Math.max(0, behind);
-  const halfWidth = Math.max(runway.width, Math.tan(tol) * depthForWidth + runway.width);
+  const minHalfWidth = runway.width * 2.5;
+  const halfWidth = Math.max(minHalfWidth, Math.tan(tol) * depthForWidth + runway.width);
   const inCone = withinDepth && Math.abs(lateral) <= halfWidth;
 
   const distance = Math.hypot(dx, dy);
@@ -118,7 +163,7 @@ export function createRunway(opts) {
     length: opts.length,
     width: opts.width ?? 14,
     approach: {
-      tolerance: opts.approach?.tolerance ?? (16 * Math.PI) / 180,
+      tolerance: opts.approach?.tolerance ?? (28 * Math.PI) / 180,
       coneLength: opts.approach?.coneLength ?? 180,
     },
     clearTime: opts.clearTime ?? 3,
@@ -152,7 +197,7 @@ export function createMap1(width, height) {
     heading: 0, // landing toward +x (east)
     length: 230,
     width: 14,
-    approach: { tolerance: (16 * Math.PI) / 180, coneLength: 200 },
+    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 200 },
     clearTime: 3,
   });
 
@@ -163,7 +208,7 @@ export function createMap1(width, height) {
     heading: (55 * Math.PI) / 180, // crosses runway A
     length: 180,
     width: 14,
-    approach: { tolerance: (16 * Math.PI) / 180, coneLength: 180 },
+    approach: { tolerance: (28 * Math.PI) / 180, coneLength: 180 },
     clearTime: 3,
   });
 

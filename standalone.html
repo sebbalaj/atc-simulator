@@ -1197,6 +1197,40 @@ body {
           }
 
           /**
+           * Robustly derive the travel direction (radians) at the END of a drawn polyline.
+           * A hand-drawn / touch path wobbles on its final segment, so taking atan2 of
+           * only the last two points is noisy and can reject an otherwise-good approach.
+           * Instead, walk back from the endpoint accumulating segments until we have
+           * covered at least `tailLength` world-px (or run out of points), and return the
+           * direction from that earlier anchor to the endpoint. This averages out the last
+           * bit of jitter while still reflecting the final inbound course.
+           *
+           * Pure function. Falls back to the last-two-point heading for very short paths.
+           * @param {Array<{x:number,y:number}>} points
+           * @param {number} [tailLength] world-px of path tail to average over (default 32)
+           * @returns {number} heading in radians (atan2 convention)
+           */
+          function approachHeadingFromPath(points, tailLength = 32) {
+            if (!points || points.length < 2) return 0;
+            const end = points[points.length - 1];
+            // Walk backward until the straight-line distance from the anchor to the end
+            // reaches tailLength, or we exhaust the path.
+            let anchor = points[points.length - 2];
+            for (let i = points.length - 2; i >= 0; i--) {
+              anchor = points[i];
+              if (Math.hypot(end.x - anchor.x, end.y - anchor.y) >= tailLength) break;
+            }
+            const dx = end.x - anchor.x;
+            const dy = end.y - anchor.y;
+            if (dx === 0 && dy === 0) {
+              // Degenerate (anchor == end): fall back to the last distinct segment.
+              const prev = points[points.length - 2];
+              return Math.atan2(end.y - prev.y, end.x - prev.x);
+            }
+            return Math.atan2(dy, dx);
+          }
+
+          /**
            * The world-space touchdown threshold of a runway: the point where an inbound
            * aircraft first meets the runway, i.e. the up-wind end relative to the landing
            * direction. Planes roll from here toward the far end.
@@ -1249,16 +1283,27 @@ body {
             const along = dx * Math.cos(runway.heading) + dy * Math.sin(runway.heading);
             const lateral = -dx * Math.sin(runway.heading) + dy * Math.cos(runway.heading);
 
-            // behind = distance on the inbound side of the threshold (positive).
+            // behind = distance on the inbound side of the threshold (positive). An
+            // endpoint ON the runway has negative `behind` (it is past the threshold,
+            // toward the far/stop end).
             const behind = -along;
             const coneLength = runway.approach.coneLength;
-            // Allow a small overrun past the threshold so a plane that has just reached
-            // the numbers still counts as landing.
-            const withinDepth = behind >= -runway.length * 0.5 && behind <= coneLength;
+            // Accept an endpoint anywhere from well behind the threshold (deep in the
+            // approach cone) THROUGH the far/stop end of the runway. "Draw the line to
+            // the end of the runway" literally puts the endpoint at the far end, where
+            // behind = -runway.length; the old window (behind >= -length*0.5) rejected
+            // that. Allow a small margin (one runway width) past the far end so landing
+            // right on the numbers / a hair beyond still counts.
+            const farMargin = runway.width;
+            const withinDepth = behind >= -(runway.length + farMargin) && behind <= coneLength;
 
-            // Lateral half-width of the cone at this depth (widens with tolerance).
+            // Lateral half-width of the cone at this depth. Widen with the angular
+            // tolerance deep in the cone, but keep a generous minimum half-width near the
+            // strip so a slightly-off-centerline endpoint on a phone still snaps. The
+            // minimum scales with runway width (2.5x) so wider strips stay forgiving too.
             const depthForWidth = Math.max(0, behind);
-            const halfWidth = Math.max(runway.width, Math.tan(tol) * depthForWidth + runway.width);
+            const minHalfWidth = runway.width * 2.5;
+            const halfWidth = Math.max(minHalfWidth, Math.tan(tol) * depthForWidth + runway.width);
             const inCone = withinDepth && Math.abs(lateral) <= halfWidth;
 
             const distance = Math.hypot(dx, dy);
@@ -1289,7 +1334,7 @@ body {
               length: opts.length,
               width: opts.width ?? 14,
               approach: {
-                tolerance: opts.approach?.tolerance ?? (16 * Math.PI) / 180,
+                tolerance: opts.approach?.tolerance ?? (28 * Math.PI) / 180,
                 coneLength: opts.approach?.coneLength ?? 180,
               },
               clearTime: opts.clearTime ?? 3,
@@ -1323,7 +1368,7 @@ body {
               heading: 0, // landing toward +x (east)
               length: 230,
               width: 14,
-              approach: { tolerance: (16 * Math.PI) / 180, coneLength: 200 },
+              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 200 },
               clearTime: 3,
             });
 
@@ -1334,7 +1379,7 @@ body {
               heading: (55 * Math.PI) / 180, // crosses runway A
               length: 180,
               width: 14,
-              approach: { tolerance: (16 * Math.PI) / 180, coneLength: 180 },
+              approach: { tolerance: (28 * Math.PI) / 180, coneLength: 180 },
               clearTime: 3,
             });
 
@@ -1463,6 +1508,7 @@ body {
 
           exports.normalizeAngle = normalizeAngle;
           exports.angleDifference = angleDifference;
+          exports.approachHeadingFromPath = approachHeadingFromPath;
           exports.runwayThreshold = runwayThreshold;
           exports.runwayFarEnd = runwayFarEnd;
           exports.isRunwayAligned = isRunwayAligned;
@@ -2579,7 +2625,7 @@ body {
               heading: 90 * DEG, // landing toward +y (south), into the field from the top
               length: 240,
               width: 15,
-              approach: { tolerance: 15 * DEG, coneLength: 200 },
+              approach: { tolerance: 28 * DEG, coneLength: 200 },
               clearTime: 3,
             });
 
@@ -2592,7 +2638,7 @@ body {
               heading: -90 * DEG, // landing toward -y (north), into the field from below
               length: 150,
               width: 12,
-              approach: { tolerance: 16 * DEG, coneLength: 170 },
+              approach: { tolerance: 28 * DEG, coneLength: 170 },
               clearTime: 3,
             });
 
@@ -2639,7 +2685,7 @@ body {
               heading: 0,
               length: 250,
               width: 16,
-              approach: { tolerance: 15 * DEG, coneLength: 210 },
+              approach: { tolerance: 28 * DEG, coneLength: 210 },
               clearTime: 3,
             });
 
@@ -2653,7 +2699,7 @@ body {
               heading: 10 * DEG,
               length: 170,
               width: 16,
-              approach: { tolerance: 18 * DEG, coneLength: 160 },
+              approach: { tolerance: 26 * DEG, coneLength: 160 },
               clearTime: 4,
             });
             makeMovingRunway(carrier, { axis: 0, amplitude: width * 0.18, speed: 16 });
@@ -2711,7 +2757,7 @@ body {
                   heading: 0, // all parallel, landing toward +x (east)
                   length: 230,
                   width: 14,
-                  approach: { tolerance: 13 * DEG, coneLength: 190 },
+                  approach: { tolerance: 20 * DEG, coneLength: 190 },
                   clearTime: 2.5,
                 })
               );
@@ -2993,7 +3039,7 @@ body {
                   heading: (30 * Math.PI) / 180,
                   length: NEW_RUNWAY_LENGTH,
                   width: 14,
-                  approach: { tolerance: (15 * Math.PI) / 180, coneLength: 190 },
+                  approach: { tolerance: (28 * Math.PI) / 180, coneLength: 190 },
                   clearTime: 3,
                 });
                 map.runways.push(runway);
@@ -4470,7 +4516,7 @@ body {
 
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
-          const { findLandingTarget, runwayThreshold, runwayFarEnd, isRunwayClear, occupyRunway } = require("src/game/airport.js");
+          const { findLandingTarget, runwayThreshold, runwayFarEnd, isRunwayClear, occupyRunway, approachHeadingFromPath } = require("src/game/airport.js");
           const { isApproachDirectionValid } = require("src/game/weather.js");
           const { isMedicalLandingAllowed, EmergencyType } = require("src/game/emergencies.js");
 
@@ -4480,21 +4526,21 @@ body {
 
             function endpointAndHeading(path, t) {
               // Prefer the built polyline's tail for an accurate endpoint + direction.
+              // The approach heading is averaged over the path tail (not just the last
+              // two samples) so it matches the forgiving snap logic in input.finalizePath.
               if (path.built && path.built.points.length >= 2) {
                 const pts = path.built.points;
                 const end = pts[pts.length - 1];
-                const prev = pts[pts.length - 2];
                 return {
                   point: { x: end.x, y: end.y },
-                  heading: Math.atan2(end.y - prev.y, end.x - prev.x),
+                  heading: approachHeadingFromPath(pts),
                 };
               }
               if (path.points && path.points.length >= 2) {
                 const end = path.points[path.points.length - 1];
-                const prev = path.points[path.points.length - 2];
                 return {
                   point: { x: end.x, y: end.y },
-                  heading: Math.atan2(end.y - prev.y, end.x - prev.x),
+                  heading: approachHeadingFromPath(path.points),
                 };
               }
               return { point: { x: t.x, y: t.y }, heading: t.heading };
@@ -4893,7 +4939,7 @@ body {
               applyCamera(ctx, game.camera, width, height);
               drawAirport(ctx, game.map);
               if (game.map) drawHospital(ctx, game.map.hospital);
-              drawPaths(ctx, world);
+              drawPaths(ctx, world, blinkOn);
               // Storm cells are drawn under the aircraft so planes read on top of them.
               if (game.weather) drawStorms(ctx, game.weather.storms, game.time);
               drawAircraft(ctx, world, game, blinkPhase);
@@ -5036,8 +5082,14 @@ body {
             ctx.stroke();
           }
 
-          /** Draw every aircraft's drawn/locked flight path. */
-          function drawPaths(ctx, world) {
+          /**
+           * Draw every aircraft's drawn/locked flight path. A locked ("cleared to land")
+           * route is drawn in a thick, bright amber so it is unmistakable from a pending
+           * green route; a cleared aircraft also gets a small amber lock marker at the
+           * runway threshold / pad it is cleared into. `blinkOn` (optional) pulses the
+           * lock marker so a fresh clearance reads at a glance.
+           */
+          function drawPaths(ctx, world, blinkOn = true) {
             const ids = world.query(Components.Transform, Components.Path);
             for (const id of ids) {
               const path = world.getComponent(id, Components.Path);
@@ -5046,17 +5098,68 @@ body {
                 : path.points;
               if (!poly || poly.length < 2) continue;
 
-              ctx.strokeStyle = path.locked
-                ? "rgba(255, 210, 59, 0.9)" // cleared-to-land path
-                : "rgba(57, 255, 20, 0.55)";
-              ctx.lineWidth = path.locked ? 2.5 : 1.8;
-              ctx.setLineDash(path.locked ? [] : [4, 4]);
-              ctx.beginPath();
-              ctx.moveTo(poly[0].x, poly[0].y);
-              for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
-              ctx.stroke();
-              ctx.setLineDash([]);
+              if (path.locked) {
+                // Cleared-to-land: a bright amber glow underlay plus a solid thick core so
+                // the route pops against the green scope.
+                ctx.strokeStyle = "rgba(255, 190, 40, 0.28)";
+                ctx.lineWidth = 7;
+                ctx.lineCap = "round";
+                ctx.setLineDash([]);
+                strokePoly(ctx, poly);
+
+                ctx.strokeStyle = "rgba(255, 214, 70, 0.95)";
+                ctx.lineWidth = 3.5;
+                strokePoly(ctx, poly);
+                ctx.lineCap = "butt";
+              } else {
+                ctx.strokeStyle = "rgba(57, 255, 20, 0.55)";
+                ctx.lineWidth = 1.8;
+                ctx.setLineDash([4, 4]);
+                strokePoly(ctx, poly);
+                ctx.setLineDash([]);
+              }
+
+              // Lock indicator at the cleared touchdown point (threshold / pad).
+              if (path.locked) {
+                const ac = world.getComponent(id, Components.Aircraft);
+                const c = ac && ac.clearance;
+                const mark = c && (c.threshold || c.stop);
+                if (mark) drawLockMarker(ctx, mark.x, mark.y, blinkOn);
+              }
             }
+          }
+
+          /** Stroke an open polyline through the given points. */
+          function strokePoly(ctx, poly) {
+            ctx.beginPath();
+            ctx.moveTo(poly[0].x, poly[0].y);
+            for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+            ctx.stroke();
+          }
+
+          /** A small amber lock ring + crosshair marking a cleared touchdown point. */
+          function drawLockMarker(ctx, x, y, blinkOn) {
+            const r = 9;
+            ctx.save();
+            ctx.strokeStyle = blinkOn ? "rgba(255, 214, 70, 0.95)" : "rgba(255, 214, 70, 0.5)";
+            ctx.fillStyle = "rgba(255, 190, 40, 0.18)";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // Short tick marks (a "locked" crosshair).
+            ctx.beginPath();
+            ctx.moveTo(x - r - 3, y);
+            ctx.lineTo(x - r + 3, y);
+            ctx.moveTo(x + r - 3, y);
+            ctx.lineTo(x + r + 3, y);
+            ctx.moveTo(x, y - r - 3);
+            ctx.lineTo(x, y - r + 3);
+            ctx.moveTo(x, y + r - 3);
+            ctx.lineTo(x, y + r + 3);
+            ctx.stroke();
+            ctx.restore();
           }
 
           /** Draw each aircraft icon, label, selection highlight and warning blink. */
@@ -6086,7 +6189,7 @@ body {
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { rebuildPath } = require("src/ecs/systems/movementSystem.js");
-          const { findLandingTarget, runwayThreshold, runwayFarEnd, holdingPatternPoints, isOverHospital, routePassesHospital } = require("src/game/airport.js");
+          const { findLandingTarget, runwayThreshold, runwayFarEnd, holdingPatternPoints, isOverHospital, routePassesHospital, approachHeadingFromPath } = require("src/game/airport.js");
           const { EmergencyType } = require("src/game/emergencies.js");
 
           /** Minimum world-space distance between appended control points (px). */
@@ -6244,10 +6347,9 @@ body {
 
             const def = getAircraftDef(ac.kind);
 
-            // Approach direction at the drawn endpoint.
-            const end = points[points.length - 1];
-            const prev = points[points.length - 2];
-            const approachHeading = Math.atan2(end.y - prev.y, end.x - prev.x);
+            // Approach direction at the drawn endpoint, averaged over the path tail so a
+            // hand-drawn / touch wobble on the final segment does not throw it off.
+            const approachHeading = approachHeadingFromPath(points);
 
             // Medical-evac: if the DRAWN route passes over the hospital POI, satisfy the
             // overflight gate immediately (routePassesHospital over the polyline) rather

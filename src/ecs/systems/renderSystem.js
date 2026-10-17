@@ -41,7 +41,7 @@ export function createRenderSystem(game) {
     applyCamera(ctx, game.camera, width, height);
     drawAirport(ctx, game.map);
     if (game.map) drawHospital(ctx, game.map.hospital);
-    drawPaths(ctx, world);
+    drawPaths(ctx, world, blinkOn);
     // Storm cells are drawn under the aircraft so planes read on top of them.
     if (game.weather) drawStorms(ctx, game.weather.storms, game.time);
     drawAircraft(ctx, world, game, blinkPhase);
@@ -184,8 +184,14 @@ function drawApproachCone(ctx, runway, direction) {
   ctx.stroke();
 }
 
-/** Draw every aircraft's drawn/locked flight path. */
-export function drawPaths(ctx, world) {
+/**
+ * Draw every aircraft's drawn/locked flight path. A locked ("cleared to land")
+ * route is drawn in a thick, bright amber so it is unmistakable from a pending
+ * green route; a cleared aircraft also gets a small amber lock marker at the
+ * runway threshold / pad it is cleared into. `blinkOn` (optional) pulses the
+ * lock marker so a fresh clearance reads at a glance.
+ */
+export function drawPaths(ctx, world, blinkOn = true) {
   const ids = world.query(Components.Transform, Components.Path);
   for (const id of ids) {
     const path = world.getComponent(id, Components.Path);
@@ -194,17 +200,68 @@ export function drawPaths(ctx, world) {
       : path.points;
     if (!poly || poly.length < 2) continue;
 
-    ctx.strokeStyle = path.locked
-      ? "rgba(255, 210, 59, 0.9)" // cleared-to-land path
-      : "rgba(57, 255, 20, 0.55)";
-    ctx.lineWidth = path.locked ? 2.5 : 1.8;
-    ctx.setLineDash(path.locked ? [] : [4, 4]);
-    ctx.beginPath();
-    ctx.moveTo(poly[0].x, poly[0].y);
-    for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    if (path.locked) {
+      // Cleared-to-land: a bright amber glow underlay plus a solid thick core so
+      // the route pops against the green scope.
+      ctx.strokeStyle = "rgba(255, 190, 40, 0.28)";
+      ctx.lineWidth = 7;
+      ctx.lineCap = "round";
+      ctx.setLineDash([]);
+      strokePoly(ctx, poly);
+
+      ctx.strokeStyle = "rgba(255, 214, 70, 0.95)";
+      ctx.lineWidth = 3.5;
+      strokePoly(ctx, poly);
+      ctx.lineCap = "butt";
+    } else {
+      ctx.strokeStyle = "rgba(57, 255, 20, 0.55)";
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([4, 4]);
+      strokePoly(ctx, poly);
+      ctx.setLineDash([]);
+    }
+
+    // Lock indicator at the cleared touchdown point (threshold / pad).
+    if (path.locked) {
+      const ac = world.getComponent(id, Components.Aircraft);
+      const c = ac && ac.clearance;
+      const mark = c && (c.threshold || c.stop);
+      if (mark) drawLockMarker(ctx, mark.x, mark.y, blinkOn);
+    }
   }
+}
+
+/** Stroke an open polyline through the given points. */
+function strokePoly(ctx, poly) {
+  ctx.beginPath();
+  ctx.moveTo(poly[0].x, poly[0].y);
+  for (let i = 1; i < poly.length; i++) ctx.lineTo(poly[i].x, poly[i].y);
+  ctx.stroke();
+}
+
+/** A small amber lock ring + crosshair marking a cleared touchdown point. */
+function drawLockMarker(ctx, x, y, blinkOn) {
+  const r = 9;
+  ctx.save();
+  ctx.strokeStyle = blinkOn ? "rgba(255, 214, 70, 0.95)" : "rgba(255, 214, 70, 0.5)";
+  ctx.fillStyle = "rgba(255, 190, 40, 0.18)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  // Short tick marks (a "locked" crosshair).
+  ctx.beginPath();
+  ctx.moveTo(x - r - 3, y);
+  ctx.lineTo(x - r + 3, y);
+  ctx.moveTo(x + r - 3, y);
+  ctx.lineTo(x + r + 3, y);
+  ctx.moveTo(x, y - r - 3);
+  ctx.lineTo(x, y - r + 3);
+  ctx.moveTo(x, y + r - 3);
+  ctx.lineTo(x, y + r + 3);
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Draw each aircraft icon, label, selection highlight and warning blink. */

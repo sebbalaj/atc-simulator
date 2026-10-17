@@ -150,7 +150,7 @@ export function applyUpgrade(state, id) {
         heading: (30 * Math.PI) / 180,
         length: NEW_RUNWAY_LENGTH,
         width: 14,
-        approach: { tolerance: (15 * Math.PI) / 180, coneLength: 190 },
+        approach: { tolerance: (28 * Math.PI) / 180, coneLength: 190 },
         clearTime: 3,
       });
       map.runways.push(runway);

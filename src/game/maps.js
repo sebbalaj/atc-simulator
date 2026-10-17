@@ -93,7 +93,7 @@ export function createMap2(width, height) {
     heading: 90 * DEG, // landing toward +y (south), into the field from the top
     length: 240,
     width: 15,
-    approach: { tolerance: 15 * DEG, coneLength: 200 },
+    approach: { tolerance: 28 * DEG, coneLength: 200 },
     clearTime: 3,
   });
 
@@ -106,7 +106,7 @@ export function createMap2(width, height) {
     heading: -90 * DEG, // landing toward -y (north), into the field from below
     length: 150,
     width: 12,
-    approach: { tolerance: 16 * DEG, coneLength: 170 },
+    approach: { tolerance: 28 * DEG, coneLength: 170 },
     clearTime: 3,
   });
 
@@ -153,7 +153,7 @@ export function createMap3(width, height) {
     heading: 0,
     length: 250,
     width: 16,
-    approach: { tolerance: 15 * DEG, coneLength: 210 },
+    approach: { tolerance: 28 * DEG, coneLength: 210 },
     clearTime: 3,
   });
 
@@ -167,7 +167,7 @@ export function createMap3(width, height) {
     heading: 10 * DEG,
     length: 170,
     width: 16,
-    approach: { tolerance: 18 * DEG, coneLength: 160 },
+    approach: { tolerance: 26 * DEG, coneLength: 160 },
     clearTime: 4,
   });
   makeMovingRunway(carrier, { axis: 0, amplitude: width * 0.18, speed: 16 });
@@ -225,7 +225,7 @@ export function createMap4(width, height) {
         heading: 0, // all parallel, landing toward +x (east)
         length: 230,
         width: 14,
-        approach: { tolerance: 13 * DEG, coneLength: 190 },
+        approach: { tolerance: 20 * DEG, coneLength: 190 },
         clearTime: 2.5,
       })
     );
