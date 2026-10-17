@@ -142,6 +142,12 @@ export function createGame(options = {}) {
   bus.on("aircraft:crashed", () => {
     game.stats.crashed += 1;
   });
+  // Brief confirmation banner the moment a plane is cleared to land, reinforcing
+  // the amber lock indicator on the scope (the audio "Cleared to land" callout
+  // fires off the same event).
+  bus.on("landing:cleared", (p) => {
+    flashBanner((p && p.kind ? p.kind.toUpperCase() : "FLIGHT") + " CLEARED TO LAND", 1.8);
+  });
   bus.on("aircraft:fuelout", () => flashBanner("FUEL EXHAUSTED - REP PENALTY"));
   bus.on("aircraft:excessivehold", () => flashBanner("HELD TOO LONG"));
   bus.on("level:over", (p) => {

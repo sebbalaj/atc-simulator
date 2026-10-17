@@ -53,9 +53,14 @@ npm run bundle      # or: node scripts/bundle.mjs
 
 - **Draw a route:** press (touch or mouse) on an aircraft and drag to trace a
   path. Release to commit. Selecting a plane plays a "Roger" acknowledgment.
-- **Clear to land:** end the drawn path inside a runway's green approach cone,
-  tracking the runway heading, and the route snaps onto the centerline and locks
-  (shown in amber). Helicopters land on the helipad from any heading.
+- **Clear to land:** end the drawn path anywhere inside a runway's green
+  approach cone (the catch zone), roughly tracking the runway heading, and the
+  route snaps onto the centerline and locks (shown in amber, with a brief
+  "cleared to land" banner). The approach is forgiving: a wide angular tolerance
+  (about 28 degrees) and a deep catch zone accept a line drawn to the far end of
+  the runway or a hand-drawn final a fair bit off the centerline, so you do not
+  need a pixel-perfect approach. Helicopters land on the helipad from any
+  heading.
 - **Hold:** end a route near the hold fix to put the plane into a circular
   holding orbit (it keeps burning fuel until you re-route it).
 - **`m`:** toggle mute. **`d`:** toggle the on-screen FPS / plane-count debug
@@ -182,10 +187,11 @@ test/
 | 3 | **Coastal Hub** | A long inland international runway, an **aircraft carrier that is a moving runway** steaming back and forth (its approach cone and rollout track the deck), and offshore oil-rig helipads over the water. |
 | 4 | **Mega Hub** | Four parallel runways, a busier spawn stream (~40% more traffic), and **strict wake-turbulence separation** — a larger bubble is enforced behind every COMMERCIAL leader (`rules.wakeMultiplier`). The performance stress case. |
 
-Aircraft classes: **Light** (slow, nimble, short runway), **Commercial** (fast,
-wide turns, long runway, emits wake turbulence), **Helicopter** (slowest, lands
-on the helipad from any heading), **Supersonic** (fastest, tiny fuel margin, cannot
-make sharp turns).
+Aircraft classes (cruise speeds in radar px/s): **Helicopter** (30, slowest,
+lands on the helipad from any heading), **Light** (40, nimble, short runway),
+**Commercial** (70, wide turns, long runway, emits wake turbulence),
+**Supersonic** (100, fastest, tiny fuel margin, cannot make sharp turns). Speeds
+are tuned so aircraft cross the scope at a controllable pace rather than zooming.
 
 ## Economy, upgrades, and events
 
@@ -261,8 +267,14 @@ No dependencies to install. Node 22 and Python 3.11 are expected.
 Design-doc sections and their implementation status:
 
 **Fully implemented**
-- Core radar UI (CRT scope, sweep, range rings), portrait layout, touch/mouse
-  path-drawing with runway/helipad snap and approach cones.
+- Core radar UI (CRT scope, rotating sweep, range rings), portrait layout,
+  touch/mouse path-drawing with runway/helipad snap and approach cones. The
+  sweep gates the display: an aircraft's blip position is refreshed only as the
+  beam passes over it and then fades toward a dim floor until the next pass, so
+  the scope shows swept (last-known) positions rather than everything at once.
+  The underlying simulation always uses true positions; only the display is
+  gated. Selected and warning/emergency aircraft are force-latched so they never
+  fade out.
 - ECS architecture, fixed-timestep loop, DPR-scaled canvas, pure/testable core.
 - Four aircraft classes with distinct speed/turn/fuel/runway-length behavior and
   procedural icons; wake turbulence behind commercial jets.

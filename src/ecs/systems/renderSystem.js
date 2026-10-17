@@ -40,7 +40,7 @@ export function createRenderSystem(game) {
     // can be centered on screen. With no camera target this is the identity.
     ctx.save();
     applyCamera(ctx, game.camera, width, height);
-    drawAirport(ctx, game.map);
+    drawAirport(ctx, game.map, activeRunwayIds(world));
     if (game.map) drawHospital(ctx, game.map.hospital);
     drawPaths(ctx, world, blinkOn);
     // Storm cells are drawn under the aircraft so planes read on top of them.
@@ -111,25 +111,73 @@ export function drawRadarBackground(ctx, width, height, sweepAngle) {
   ctx.stroke();
 }
 
+/**
+ * Collect the set of runway ids that currently have an aircraft cleared onto
+ * them (locked clearance or rolling out), so the render layer can highlight the
+ * active runway + its catch cone. Display-only; never touches the sim.
+ */
+function activeRunwayIds(world) {
+  const active = new Set();
+  const ids = world.query(Components.Aircraft);
+  for (const id of ids) {
+    const ac = world.getComponent(id, Components.Aircraft);
+    const rid = ac && ac.clearance && ac.clearance.runwayId;
+    if (rid != null) active.add(rid);
+    const lrid = ac && ac.landing && ac.landing.runwayId;
+    if (lrid != null) active.add(lrid);
+  }
+  return active;
+}
+
 /** Draw runways, their approach cones, and the helipad. */
-export function drawAirport(ctx, map) {
+export function drawAirport(ctx, map, activeIds) {
   if (!map) return;
+  const active = activeIds || new Set();
 
   for (const runway of map.runways) {
     // Both landing directions share one physical strip; draw cones for each.
-    drawApproachCone(ctx, runway, runway.heading);
-    drawApproachCone(ctx, runway, runway.heading + Math.PI);
+    // The runway with a cleared aircraft gets a brighter "catch zone" cone so
+    // the active approach reads at a glance.
+    const isActive = active.has(runway.id);
+    drawApproachCone(ctx, runway, runway.heading, isActive);
+    drawApproachCone(ctx, runway, runway.heading + Math.PI, isActive);
   }
 
   for (const runway of map.runways) {
     const thr = runwayThreshold(runway);
     const far = runwayFarEnd(runway);
-    ctx.strokeStyle = "rgba(200, 220, 255, 0.85)";
+    const isActive = active.has(runway.id);
+
+    // An active (cleared) runway gets a faint amber underglow so it reads as the
+    // one in use, consistent with the amber cleared-path/lock cues.
+    if (isActive) {
+      ctx.strokeStyle = "rgba(255, 190, 40, 0.30)";
+      ctx.lineWidth = runway.width + 7;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(thr.x, thr.y);
+      ctx.lineTo(far.x, far.y);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+    }
+
+    ctx.strokeStyle = isActive ? "rgba(235, 240, 255, 0.95)" : "rgba(200, 220, 255, 0.85)";
     ctx.lineWidth = runway.width;
     ctx.lineCap = "butt";
     ctx.beginPath();
     ctx.moveTo(thr.x, thr.y);
     ctx.lineTo(far.x, far.y);
+    ctx.stroke();
+
+    // Threshold bar: a bright crossbar marking the touchdown end so the "aim
+    // here" end of the active strip is obvious.
+    const perp = runway.heading + Math.PI / 2;
+    const hw = runway.width / 2;
+    ctx.strokeStyle = isActive ? "rgba(255, 214, 70, 0.95)" : "rgba(220, 235, 255, 0.8)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(thr.x - Math.cos(perp) * hw, thr.y - Math.sin(perp) * hw);
+    ctx.lineTo(thr.x + Math.cos(perp) * hw, thr.y + Math.sin(perp) * hw);
     ctx.stroke();
 
     // Centerline dashes.
@@ -161,8 +209,13 @@ export function drawAirport(ctx, map) {
   }
 }
 
-/** Draw a single approach cone extending back from a runway threshold. */
-function drawApproachCone(ctx, runway, direction) {
+/**
+ * Draw a single approach cone extending back from a runway threshold. The cone
+ * is the forgiving "catch zone": end a drawn route anywhere inside it tracking
+ * the runway heading and the approach snaps and locks. An `active` cone (a
+ * plane already cleared into this runway) is drawn brighter.
+ */
+function drawApproachCone(ctx, runway, direction, active = false) {
   const thr = {
     x: runway.x - Math.cos(direction) * (runway.length / 2),
     y: runway.y - Math.sin(direction) * (runway.length / 2),
@@ -173,16 +226,40 @@ function drawApproachCone(ctx, runway, direction) {
   const a1 = back + tol;
   const a2 = back - tol;
 
-  ctx.fillStyle = "rgba(57, 255, 20, 0.07)";
-  ctx.strokeStyle = "rgba(57, 255, 20, 0.25)";
-  ctx.lineWidth = 1;
+  const ex1 = thr.x + Math.cos(a1) * len;
+  const ey1 = thr.y + Math.sin(a1) * len;
+  const ex2 = thr.x + Math.cos(a2) * len;
+  const ey2 = thr.y + Math.sin(a2) * len;
+
+  // Filled wedge. A gradient fades the catch zone out toward its wide end so the
+  // mouth reads as "aim roughly here" without a hard edge.
+  const grad = ctx.createLinearGradient(thr.x, thr.y, (ex1 + ex2) / 2, (ey1 + ey2) / 2);
+  if (active) {
+    grad.addColorStop(0, "rgba(255, 210, 70, 0.20)");
+    grad.addColorStop(1, "rgba(255, 210, 70, 0)");
+  } else {
+    grad.addColorStop(0, "rgba(57, 255, 20, 0.14)");
+    grad.addColorStop(1, "rgba(57, 255, 20, 0)");
+  }
+  ctx.fillStyle = grad;
   ctx.beginPath();
   ctx.moveTo(thr.x, thr.y);
-  ctx.lineTo(thr.x + Math.cos(a1) * len, thr.y + Math.sin(a1) * len);
-  ctx.lineTo(thr.x + Math.cos(a2) * len, thr.y + Math.sin(a2) * len);
+  ctx.lineTo(ex1, ey1);
+  ctx.lineTo(ex2, ey2);
   ctx.closePath();
   ctx.fill();
+
+  // Dashed cone edges so the boundary of the catch zone is legible.
+  ctx.strokeStyle = active ? "rgba(255, 214, 70, 0.6)" : "rgba(57, 255, 20, 0.35)";
+  ctx.lineWidth = active ? 1.4 : 1;
+  ctx.setLineDash([5, 5]);
+  ctx.beginPath();
+  ctx.moveTo(thr.x, thr.y);
+  ctx.lineTo(ex1, ey1);
+  ctx.moveTo(thr.x, thr.y);
+  ctx.lineTo(ex2, ey2);
   ctx.stroke();
+  ctx.setLineDash([]);
 }
 
 /**
@@ -402,12 +479,19 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
     def.drawShape(ctx, render.size);
     ctx.restore();
 
-    // Label: callsign (follows the blip).
+    // Label: callsign (follows the blip). A thin dark outline keeps it legible
+    // over bright blips and the green sweep fade behind it.
     const cs = label ? label.callsign : "";
     if (cs) {
-      ctx.fillStyle = warning ? "#ff6a60" : "rgba(220,255,210,0.9)";
       ctx.font = '10px "Courier New", monospace';
-      ctx.fillText(cs, render.size + 4, -4);
+      const lx = render.size + 4;
+      const ly = -4;
+      ctx.strokeStyle = "rgba(0,20,5,0.85)";
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = "round";
+      ctx.strokeText(cs, lx, ly);
+      ctx.fillStyle = warning ? "#ff6a60" : "rgba(220,255,210,0.95)";
+      ctx.fillText(cs, lx, ly);
     }
     ctx.restore();
   }
