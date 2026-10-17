@@ -126,6 +126,13 @@ export function createCollisionSystem(game) {
       // commitLanding (requires path.locked + ac.clearance + reaching the
       // cleared route end / threshold), so this cannot be abused to fly through
       // traffic before a plane is actually cleared/at the threshold.
+      //
+      // NOTE: in production this guard is effectively dead code — commitLanding
+      // destroys the entity in the same tick it sets the state, so no
+      // 'landing'/'landed' entity survives to the next collision pass. It is
+      // kept intentionally as defensive code: it keeps the requirement (a plane
+      // at the threshold cannot collide) correct regardless of tick ordering,
+      // and the matching flag-clearing branch below depends on the same state.
       if (ac.state === "landing" || ac.state === "landed") continue;
       const def = getAircraftDef(ac.kind);
       snapshots.push({

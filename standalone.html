@@ -2815,7 +2815,9 @@ body {
               x: cx,
               y: smallY,
               heading: -90 * DEG, // landing toward -y (north), into the field from below
-              // FEAT-004: shrunk 0.70 (150->105, width 12->8, cone 170->119).
+              // FEAT-004: shrunk 0.70 (150->105, width 12->8 [12*0.70=8.4 rounds to 8],
+              // cone 170->119). The width is the same 0.70 factor as everywhere else,
+              // just rounded to the nearest integer; it does not gate landings.
               length: 105,
               width: 8,
               approach: { tolerance: 28 * DEG, coneLength: 119 },
@@ -5138,6 +5140,13 @@ body {
                 // commitLanding (requires path.locked + ac.clearance + reaching the
                 // cleared route end / threshold), so this cannot be abused to fly through
                 // traffic before a plane is actually cleared/at the threshold.
+                //
+                // NOTE: in production this guard is effectively dead code — commitLanding
+                // destroys the entity in the same tick it sets the state, so no
+                // 'landing'/'landed' entity survives to the next collision pass. It is
+                // kept intentionally as defensive code: it keeps the requirement (a plane
+                // at the threshold cannot collide) correct regardless of tick ordering,
+                // and the matching flag-clearing branch below depends on the same state.
                 if (ac.state === "landing" || ac.state === "landed") continue;
                 const def = getAircraftDef(ac.kind);
                 snapshots.push({
@@ -6969,7 +6978,8 @@ body {
               const thr = runwayThreshold(dirRunway);
               const far = runwayFarEnd(dirRunway);
               // Replace the raw tail with the threshold so the plane tracks the centerline
-              // onto the numbers; the landing system then rolls it out to the far end.
+              // onto the numbers; the landing system touches the plane down immediately at
+              // the threshold (no far-end rollout) once it reaches this route end.
               const out = points.slice();
               out.push({ x: thr.x, y: thr.y });
               return {

@@ -105,7 +105,9 @@ export function createMap2(width, height) {
     x: cx,
     y: smallY,
     heading: -90 * DEG, // landing toward -y (north), into the field from below
-    // FEAT-004: shrunk 0.70 (150->105, width 12->8, cone 170->119).
+    // FEAT-004: shrunk 0.70 (150->105, width 12->8 [12*0.70=8.4 rounds to 8],
+    // cone 170->119). The width is the same 0.70 factor as everywhere else,
+    // just rounded to the nearest integer; it does not gate landings.
     length: 105,
     width: 8,
     approach: { tolerance: 28 * DEG, coneLength: 119 },

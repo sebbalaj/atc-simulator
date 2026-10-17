@@ -260,7 +260,8 @@ export function snapToLanding(map, points, approachHeading, def) {
     const thr = runwayThreshold(dirRunway);
     const far = runwayFarEnd(dirRunway);
     // Replace the raw tail with the threshold so the plane tracks the centerline
-    // onto the numbers; the landing system then rolls it out to the far end.
+    // onto the numbers; the landing system touches the plane down immediately at
+    // the threshold (no far-end rollout) once it reaches this route end.
     const out = points.slice();
     out.push({ x: thr.x, y: thr.y });
     return {
