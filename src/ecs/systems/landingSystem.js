@@ -133,6 +133,7 @@ export function createLandingSystem(game) {
         if (!isRunwayClear(runway, game.time)) return; // hold: runway busy
         occupyRunway(runway, game.time);
       }
+      announceCleared(id, ac, c);
       ac.landing = {
         surface: "runway",
         heading: c.heading,
@@ -141,9 +142,25 @@ export function createLandingSystem(game) {
         runwayId: runway && runway.moving ? c.runwayId : null,
       };
     } else {
+      announceCleared(id, ac, c);
       ac.landing = { surface: "helipad", heading: t.heading, stop: c.stop };
     }
     ac.state = "landing";
+  }
+
+  /**
+   * Emit a one-shot 'landing:cleared' event when a plane commits to a landing
+   * surface. Audio uses this for the "Cleared to land" callout; guarded so it
+   * fires once per aircraft even if commitLanding is re-entered.
+   */
+  function announceCleared(id, ac, clearance) {
+    if (ac._clearedAnnounced) return;
+    ac._clearedAnnounced = true;
+    bus.emit("landing:cleared", {
+      id,
+      kind: ac.kind,
+      surface: clearance && clearance.surface,
+    });
   }
 
   function advanceLanding(id, t, ac, def, dt) {

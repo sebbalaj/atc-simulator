@@ -75,6 +75,34 @@ body {
   text-shadow: 0 0 6px var(--crt-green-dim);
 }
 
+.audio-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.audio-mute {
+  background: transparent;
+  border: 1px solid var(--crt-green-dim);
+  border-radius: 4px;
+  color: var(--crt-green);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.audio-mute.muted {
+  color: #ff6a60;
+  border-color: #ff6a60;
+}
+
+.audio-volume {
+  width: 64px;
+  accent-color: var(--crt-green);
+}
+
 .reputation-meter {
   flex: 1;
   height: 10px;

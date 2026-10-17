@@ -34,6 +34,10 @@ export function createConsole(game, dom = {}) {
   const clock = createClock(game.clockOptions ?? {});
   const strips = stripsEl ? createFlightStrips(stripsEl, game) : null;
 
+  // Audio mute/volume control wired into the console header. It unlocks the
+  // AudioContext on first use (a user gesture) and toggles the master gain.
+  const audioControl = game.audio ? buildAudioControl(game.audio, clockEl) : null;
+
   // Expose the models on the game so other systems / later features can read
   // them (e.g. the FEAT-005 upgrade shop reads game.bank).
   game.bank = bank;
@@ -150,9 +154,69 @@ export function createConsole(game, dom = {}) {
     for (const un of unsubscribers) un();
     unsubscribers.length = 0;
     if (strips) strips.clear();
+    if (audioControl) audioControl.detach();
   }
 
-  return { bank, reputation, clock, strips, update, render, detach, resetForShift, root };
+  return { bank, reputation, clock, strips, update, render, detach, resetForShift, audioControl, root };
+}
+
+/**
+ * Build a compact mute/volume control and insert it into the console header
+ * (next to the shift clock). Clicking the mute button unlocks the AudioContext
+ * on the user gesture, then toggles mute; the slider sets the master volume.
+ * Returns { detach } to remove the inserted nodes. Browser-only (called from
+ * createConsole, which only runs with a live DOM).
+ */
+function buildAudioControl(audio, clockEl) {
+  const row = clockEl && clockEl.parentNode ? clockEl.parentNode : null;
+  if (!row) return { detach() {} };
+
+  const wrap = document.createElement("span");
+  wrap.className = "audio-control console-field";
+
+  const muteBtn = document.createElement("button");
+  muteBtn.className = "audio-mute";
+  muteBtn.type = "button";
+  muteBtn.setAttribute("aria-label", "Toggle sound");
+
+  const slider = document.createElement("input");
+  slider.className = "audio-volume";
+  slider.type = "range";
+  slider.min = "0";
+  slider.max = "100";
+  slider.value = String(Math.round(audio.volume * 100));
+  slider.setAttribute("aria-label", "Volume");
+
+  function refresh() {
+    muteBtn.textContent = audio.muted ? "\u{1F507}" : "\u{1F50A}"; // muted/speaker
+    muteBtn.classList.toggle("muted", audio.muted);
+  }
+
+  const onMute = () => {
+    audio.unlock(); // first gesture unlock
+    audio.toggleMute();
+    refresh();
+  };
+  const onVol = () => {
+    audio.unlock();
+    audio.setVolume(Number(slider.value) / 100);
+    refresh();
+  };
+  muteBtn.addEventListener("click", onMute);
+  slider.addEventListener("input", onVol);
+
+  wrap.appendChild(muteBtn);
+  wrap.appendChild(slider);
+  row.appendChild(wrap);
+  refresh();
+
+  return {
+    detach() {
+      muteBtn.removeEventListener("click", onMute);
+      slider.removeEventListener("input", onVol);
+      if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+    },
+  };
 }
 
 /** Format a whole-dollar balance like "$1,250". Pure helper. */

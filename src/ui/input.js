@@ -91,7 +91,10 @@ export function attachInput(canvas, game) {
       return;
     }
     const t = world.getComponent(id, Components.Transform);
+    const wasSelected = game.selectedId === id;
     game.selectedId = id;
+    // Radio acknowledge ("Roger") when a new aircraft is selected for routing.
+    if (!wasSelected && game.bus) game.bus.emit("aircraft:selected", { id });
     // Start the route from the plane's current position.
     drawing = { id, points: [{ x: t.x, y: t.y }] };
     try {

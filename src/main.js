@@ -23,6 +23,7 @@ import { attachInput } from "./ui/input.js";
 import { createConsole } from "./ui/console.js";
 import { createProgression } from "./game/progression.js";
 import { createScreens } from "./ui/screens.js";
+import { createAudioEngine } from "./game/audio.js";
 
 // Fixed simulation step: 60 updates per second.
 const FIXED_DT = 1 / 60;
@@ -33,6 +34,12 @@ const MAX_FRAME_DELTA = 0.25;
 // attached). Overwritten by resize() once a real canvas exists.
 const DEFAULT_WIDTH = 400;
 const DEFAULT_HEIGHT = 600;
+
+// Separation (px) at/under which the proximity alarm engages. Mirrors the HUD's
+// ALARM_THRESHOLD so the audible alarm tracks the visual vignette.
+const ALARM_THRESHOLD = 72;
+// Aircraft count mapped to full ambient intensity (soft cap for crowding).
+const CROWDING_SOFT_CAP = 12;
 
 /**
  * Create the Game object. Pure construction; nothing touches the DOM until
@@ -79,6 +86,13 @@ export function createGame(options = {}) {
     ilsOwned: false,
     console: null,
     screens: null,
+    // Synthesized Web Audio engine. Constructed eagerly (safe no-op under Node
+    // / where the API is missing); it unlocks on the first user gesture.
+    audio: createAudioEngine(options.audio ?? {}),
+    // On-screen FPS + plane-count debug readout (toggled with the 'd' key).
+    debug: false,
+    _fps: 0,
+    _frameTimes: [],
     // Progression: shift manager (per-shift counters, map unlock gating). The
     // upgrade shop reads/writes the active map + game flags via this.
     progression: createProgression(options.progression ?? {}),
@@ -133,6 +147,11 @@ export function createGame(options = {}) {
     if (p && p.reason === "fired") flashBanner("GAME OVER - YOU'RE FIRED");
   });
 
+  // Wire the synthesized audio engine to the EventBus: spawn static clicks,
+  // "Cleared to land" / "Roger" callouts, etc. The alarm + ambient layers are
+  // driven each tick from update() (proximity severity + live plane count).
+  game._detachAudio = game.audio.subscribe(bus);
+
   /**
    * Advance the simulation by one fixed step. System order (authoritative):
    * spawn -> movement (applies drawn paths) -> landing -> collision -> (render
@@ -170,6 +189,18 @@ export function createGame(options = {}) {
     game.systems.movement(dt);
     game.systems.landing(dt);
     game.systems.collision(dt);
+
+    // Drive the audio engine's live layers from the simulation state:
+    //  - proximity alarm severity from the closest separation vs the threshold,
+    //  - ambient soundscape intensity from the live aircraft count (crowding).
+    const closest = game.closestSeparation;
+    const severity =
+      closest == null || !(closest < ALARM_THRESHOLD)
+        ? 0
+        : Math.max(0, Math.min(1, 1 - closest / ALARM_THRESHOLD));
+    game.audio.setProximity(severity);
+    game.audio.setCrowdingFromCount(game.world.entityCount(), CROWDING_SOFT_CAP);
+    game.audio.update(dt);
   }
 
   /** Draw a single frame. */
@@ -181,6 +212,24 @@ export function createGame(options = {}) {
     // Blink phase for proximity warnings (~3 Hz).
     const blinkPhase = (game.time * 3) % 1;
     game.systems.render(ctx, w, h, blinkPhase);
+    if (game.debug) drawDebugReadout(ctx);
+  }
+
+  /** Small corner overlay: FPS + live aircraft count (toggle with 'd'). */
+  function drawDebugReadout(ctx) {
+    const fps = Math.round(game._fps);
+    const planes = game.world.entityCount();
+    const text = `FPS ${fps}  PLANES ${planes}`;
+    ctx.save();
+    ctx.font = '11px "Courier New", monospace';
+    const pad = 4;
+    const tw = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(4, 4, tw + pad * 2, 18);
+    ctx.fillStyle = fps >= 55 ? "#8fff6a" : fps >= 30 ? "#ffd23b" : "#ff6a60";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, 4 + pad, 4 + 9);
+    ctx.restore();
   }
 
   /** The requestAnimationFrame callback: fixed-step accumulator. */
@@ -190,6 +239,14 @@ export function createGame(options = {}) {
     let delta = now - game._lastTs;
     game._lastTs = now;
     if (delta > MAX_FRAME_DELTA) delta = MAX_FRAME_DELTA;
+
+    // Rolling FPS estimate over the last ~30 frames (for the debug readout).
+    if (delta > 0) {
+      game._frameTimes.push(delta);
+      if (game._frameTimes.length > 30) game._frameTimes.shift();
+      const sum = game._frameTimes.reduce((a, b) => a + b, 0);
+      game._fps = sum > 0 ? game._frameTimes.length / sum : 0;
+    }
 
     game._accumulator += delta;
     while (game._accumulator >= FIXED_DT) {
@@ -211,6 +268,31 @@ export function createGame(options = {}) {
 
     resize();
     window.addEventListener("resize", resize);
+
+    // Unlock the AudioContext on the first user gesture (mobile autoplay policy).
+    // Once unlocked the handlers remove themselves.
+    const unlockAudio = () => {
+      game.audio.unlock();
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+    };
+    window.addEventListener("pointerdown", unlockAudio);
+    window.addEventListener("keydown", unlockAudio);
+    window.addEventListener("touchstart", unlockAudio);
+    game._detachAudioUnlock = () => {
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+    };
+
+    // Debug readout toggle: press 'd' to show/hide the FPS + plane-count HUD.
+    const onKey = (ev) => {
+      if (ev.key === "d" || ev.key === "D") game.debug = !game.debug;
+      else if (ev.key === "m" || ev.key === "M") game.audio.toggleMute();
+    };
+    window.addEventListener("keydown", onKey);
+    game._detachKeys = () => window.removeEventListener("keydown", onKey);
 
     game._detachInput = attachInput(canvas, game);
 
@@ -240,6 +322,14 @@ export function createGame(options = {}) {
     if (game._detachInput) {
       game._detachInput();
       game._detachInput = null;
+    }
+    if (game._detachAudioUnlock) {
+      game._detachAudioUnlock();
+      game._detachAudioUnlock = null;
+    }
+    if (game._detachKeys) {
+      game._detachKeys();
+      game._detachKeys = null;
     }
     if (game.console) {
       game.console.detach();

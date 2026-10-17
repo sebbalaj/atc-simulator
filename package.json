@@ -5,8 +5,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test",
-    "check": "echo 'Run: node --check on each .js under src/ and test/ (see README).'",
+    "test": "node --test 'test/**/*.test.js'",
+    "smoke": "node scripts/smoke.mjs",
+    "verify": "bash scripts/verify.sh",
     "start": "python3 -m http.server 8000"
   },
   "license": "MIT"
