@@ -961,14 +961,17 @@ body {
           //   SUPERSONIC (mil): fastest, tiny fuel margin, hard cap on per-point turn
           //                     angle (cannot make sharp corners).
           //
-          // FEAT-003 tuning: cruise speeds were cut to ~0.44x (light 90->40, heli 70->30,
-          // commercial 160->70, supersonic 230->100) so aircraft read at a controllable
-          // pace instead of zooming across the radar. Because fuelMax is measured in
-          // SECONDS of flight, the reachable distance per second shrank with the speed
-          // cut, so fuelMax was scaled up ~2.3x (keeping SUPERSONIC's margin tightest) and
-          // the economy efficiency window was widened to match the longer time-in-airspace
-          // (see economy.js). Class ORDERING is preserved: helicopter <= light <
-          // commercial < supersonic.
+          // FEAT-003 tuning: cruise speeds were cut to 0.25x of the prior controllable
+          // band (light 40->10, heli 30->7.5, commercial 70->17.5, supersonic 100->25) so
+          // aircraft read at a calm, deliberate pace. Because fuelMax is measured in
+          // SECONDS of flight, the reachable distance per fuel-second drops to 1/4 with a
+          // 1/4-speed cut, so fuelMax was scaled up ~4x (light 200->640, heli 250->760,
+          // commercial 340->1000, supersonic 150->480) to keep planes able to reach a
+          // runway from the spawn perimeter with margin; SUPERSONIC keeps the tightest
+          // reserve of the four. The economy efficiency window (economy.js) was widened
+          // and the spawn cadence (spawnSystem.js) lengthened to match the ~4x-longer
+          // time-in-airspace. Class ORDERING is preserved: helicopter 7.5 <= light 10 <
+          // commercial 17.5 < supersonic 25.
 
           /** Canonical aircraft kind constants. */
           const AircraftKind = Object.freeze({
@@ -1001,13 +1004,13 @@ body {
             [AircraftKind.LIGHT]: {
               kind: AircraftKind.LIGHT,
               name: "Light",
-              speed: 40,
+              speed: 10,
               turnRateMax: Math.PI, // ~180 deg/s: very nimble
               maxTurnAngle: (150 * Math.PI) / 180, // can nearly reverse at a point
               hitboxRadius: 7,
               separationRadius: 46,
               wakeSeparation: 0,
-              fuelMax: 200,
+              fuelMax: 640,
               runwayLengthRequired: 90,
               passengers: [1, 4],
               color: "#8fff6a",
@@ -1018,13 +1021,13 @@ body {
             [AircraftKind.COMMERCIAL]: {
               kind: AircraftKind.COMMERCIAL,
               name: "Commercial",
-              speed: 70,
+              speed: 17.5,
               turnRateMax: (70 * Math.PI) / 180, // wide, airliner-like turns
               maxTurnAngle: (70 * Math.PI) / 180,
               hitboxRadius: 11,
               separationRadius: 64,
               wakeSeparation: 90, // trailing traffic must stay well clear of the wake
-              fuelMax: 340,
+              fuelMax: 1000,
               runwayLengthRequired: 190,
               passengers: [90, 220],
               color: "#39ff14",
@@ -1035,13 +1038,13 @@ body {
             [AircraftKind.HELICOPTER]: {
               kind: AircraftKind.HELICOPTER,
               name: "Helicopter",
-              speed: 30,
+              speed: 7.5,
               turnRateMax: Math.PI, // can pivot freely
               maxTurnAngle: Math.PI, // no corner restriction
               hitboxRadius: 8,
               separationRadius: 42,
               wakeSeparation: 0,
-              fuelMax: 250,
+              fuelMax: 760,
               runwayLengthRequired: 0, // uses the helipad, not a runway
               passengers: [1, 8],
               color: "#6ad1ff",
@@ -1052,13 +1055,13 @@ body {
             [AircraftKind.SUPERSONIC]: {
               kind: AircraftKind.SUPERSONIC,
               name: "Supersonic",
-              speed: 100,
+              speed: 25,
               turnRateMax: (45 * Math.PI) / 180, // sluggish to turn at speed
               maxTurnAngle: (35 * Math.PI) / 180, // refuses sharp corners
               hitboxRadius: 9,
               separationRadius: 72,
               wakeSeparation: 0,
-              fuelMax: 150, // minimal reserve (tightest margin of the four classes)
+              fuelMax: 480, // minimal reserve (tightest margin of the four classes)
               runwayLengthRequired: 220,
               passengers: [1, 2],
               color: "#ffd23b",
@@ -2446,13 +2449,14 @@ body {
           // linearly toward EFFICIENCY_MIN by EFFICIENCY_SLOW_TIME.
           const EFFICIENCY_MAX = 1.5;
           const EFFICIENCY_MIN = 0.8;
-          // FEAT-003: aircraft cruise speeds were cut ~2.3x, so the same route now takes
-          // proportionally longer to fly. The efficiency window is scaled up to match
-          // (20->40 full-bonus, 120->240 floor) so a promptly-handled slower plane still
-          // earns the full EFFICIENCY_MAX and the decay happens over a comparable
-          // player-difficulty window rather than expiring before a normal route finishes.
-          const EFFICIENCY_FULL_TIME = 40; // seconds
-          const EFFICIENCY_SLOW_TIME = 240; // seconds
+          // FEAT-003: aircraft cruise speeds were cut to 0.25x, so the same route now
+          // takes ~4x longer to fly. The efficiency window is scaled up to match (40->120
+          // full-bonus, 240->600 floor) so a promptly-handled slower plane still earns the
+          // full EFFICIENCY_MAX across a normal slow route, and the decay happens over a
+          // comparable player-difficulty window rather than expiring before a normal route
+          // can finish at the reduced speed.
+          const EFFICIENCY_FULL_TIME = 120; // seconds
+          const EFFICIENCY_SLOW_TIME = 600; // seconds
 
           /**
            * The efficiency multiplier for a given time in the airspace (seconds). Shorter
@@ -4193,12 +4197,13 @@ body {
            * the field never becomes impossible. Pure function.
            */
           function spawnInterval(shiftTime) {
-            // FEAT-003: aircraft now cruise ~2.3x slower, so each plane lingers in the
-            // airspace longer. For the same spawn rate that raises the standing aircraft
-            // count, so the base and floor intervals are lengthened (6.5->8.5, 2.2->3.2)
-            // to keep peak crowding comparable to the faster-aircraft balance.
-            const base = 8.5; // seconds between spawns at the start
-            const floor = 3.2; // never faster than this
+            // FEAT-003: aircraft now cruise at 0.25x (another ~4x slower), so each plane
+            // lingers in the airspace much longer before it reaches a runway. At the old
+            // cadence that would pile up the standing-aircraft count, so the base and
+            // floor intervals are lengthened (8.5->14, 3.2->5.5) to keep peak crowding
+            // comparable to the pre-slowdown balance.
+            const base = 14; // seconds between spawns at the start
+            const floor = 5.5; // never faster than this
             const ramp = Math.min(1, shiftTime / 300); // fully ramped after 5 minutes
             return base - (base - floor) * ramp;
           }
@@ -4787,10 +4792,12 @@ body {
           // Landing system. When an aircraft's drawn path terminates in a runway approach
           // cone it is aligned with (correct angle + heading + the runway long enough for
           // the class), or on the helipad for a helicopter, the approach is locked
-          // ("cleared to land"). The plane then rolls down the runway; once it reaches the
-          // stop end the entity is removed and 'aircraft:landed' is emitted with
-          // {kind, passengers, timeInAirspace}. Runway occupancy/clear-time blocks the
-          // next landing on the same runway.
+          // ("cleared to land"). The plane touches down IMMEDIATELY on reaching the
+          // threshold (the tail of the cleared route) / pad: the entity is removed and
+          // 'aircraft:landed' is emitted with {kind, passengers, timeInAirspace,
+          // _emergency}. No rollout to the far end (so slow/short/moving-runway landings
+          // resolve promptly). Runway occupancy/clear-time blocks the next landing on the
+          // same runway.
 
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
@@ -4855,9 +4862,9 @@ body {
                 const path = world.getComponent(id, Components.Path);
                 const def = getAircraftDef(ac.kind);
 
-                if (ac.state === "landing") {
-                  // Roll down the active surface toward the stop point.
-                  advanceLanding(id, t, ac, def, dt);
+                if (ac.state === "landing" || ac.state === "landed") {
+                  // Already touched down this tick (threshold landing resolves
+                  // immediately in commitLanding); nothing more to do.
                   continue;
                 }
 
@@ -4911,21 +4918,26 @@ body {
                 const runway = runwayById(c.runwayId);
                 if (runway) {
                   if (!isRunwayClear(runway, game.time)) return; // hold: runway busy
+                  // Mark the strip occupied at touchdown; it stays red/blocked until
+                  // now >= occupiedUntil (now + clearTime, shrunk by the ground-crew
+                  // upgrade). Called exactly once per landing.
                   occupyRunway(runway, game.time);
                 }
                 announceCleared(id, ac, c);
-                ac.landing = {
-                  surface: "runway",
-                  heading: c.heading,
-                  stop: c.stop,
-                  // Moving-runway (carrier) landings track the live far-end each tick.
-                  runwayId: runway && runway.moving ? c.runwayId : null,
-                };
+                ac.state = "landing";
+                // Threshold landing: touchdown is immediate at the runway threshold (the
+                // tail of the cleared route), so there is no rollout to the far end. This
+                // keeps short/slow-speed and moving-runway (carrier) landings resolving
+                // promptly instead of chasing the far end.
+                ac.landing = { surface: "runway", heading: c.heading };
               } else {
                 announceCleared(id, ac, c);
-                ac.landing = { surface: "helipad", heading: t.heading, stop: c.stop };
+                ac.state = "landing";
+                ac.landing = { surface: "helipad", heading: t.heading };
               }
-              ac.state = "landing";
+              // Resolve the landed/removed transition immediately on reaching the
+              // threshold / pad.
+              completeLanding(id, ac);
             }
 
             /**
@@ -4943,46 +4955,29 @@ body {
               });
             }
 
-            function advanceLanding(id, t, ac, def, dt) {
-              const info = ac.landing;
-              // For a moving runway (carrier) refresh the stop point to the live far-end
-              // so the rollout tracks the deck as it translates under the aircraft.
-              if (info.runwayId) {
-                const runway = runwayById(info.runwayId);
-                if (runway) {
-                  info.stop = runwayFarEnd({ ...runway, heading: info.heading });
-                }
-              }
-              const stop = info.stop;
-              // Decelerate along the landing direction toward the stop point.
-              const speed = def.speed * 0.55;
-              const toStop = Math.hypot(stop.x - t.x, stop.y - t.y);
-              const step = speed * dt;
-
-              if (toStop <= step || toStop < 2) {
-                // Touchdown complete: remove the entity and award the landing.
-                const timeInAirspace = game.time - (ac.spawnTime ?? game.time);
-                const wasEmergency = !!(
-                  ac.emergency &&
-                  (ac.emergency.type === EmergencyType.MAYDAY ||
-                    ac.emergency.type === EmergencyType.MEDICAL ||
-                    ac.emergency.type === EmergencyType.FUEL)
-                );
-                world.destroyEntity(id);
-                bus.emit("aircraft:landed", {
-                  id,
-                  kind: ac.kind,
-                  passengers: ac.passengers,
-                  timeInAirspace,
-                  _emergency: wasEmergency ? ac.emergency.type : null,
-                });
-                return;
-              }
-
-              const dir = Math.atan2(stop.y - t.y, stop.x - t.x);
-              t.x += Math.cos(dir) * step;
-              t.y += Math.sin(dir) * step;
-              t.heading = info.heading ?? dir;
+            /**
+             * Touchdown complete: mark the plane landed, remove the entity and emit
+             * 'aircraft:landed' with {kind, passengers, timeInAirspace, _emergency}
+             * exactly as the former rollout did. Called the moment the plane reaches the
+             * threshold (runway) or pad (helipad).
+             */
+            function completeLanding(id, ac) {
+              ac.state = "landed";
+              const timeInAirspace = game.time - (ac.spawnTime ?? game.time);
+              const wasEmergency = !!(
+                ac.emergency &&
+                (ac.emergency.type === EmergencyType.MAYDAY ||
+                  ac.emergency.type === EmergencyType.MEDICAL ||
+                  ac.emergency.type === EmergencyType.FUEL)
+              );
+              world.destroyEntity(id);
+              bus.emit("aircraft:landed", {
+                id,
+                kind: ac.kind,
+                passengers: ac.passengers,
+                timeInAirspace,
+                _emergency: wasEmergency ? ac.emergency.type : null,
+              });
             }
           }
 
@@ -5113,6 +5108,12 @@ body {
               for (const id of ids) {
                 const t = world.getComponent(id, Components.Transform);
                 const ac = world.getComponent(id, Components.Aircraft);
+                // Touched-down aircraft are on the ground: exclude 'landing'/'landed' from
+                // mid-air conflict checks. Aircraft.state only becomes 'landing' inside
+                // commitLanding (requires path.locked + ac.clearance + reaching the
+                // cleared route end / threshold), so this cannot be abused to fly through
+                // traffic before a plane is actually cleared/at the threshold.
+                if (ac.state === "landing" || ac.state === "landed") continue;
                 const def = getAircraftDef(ac.kind);
                 snapshots.push({
                   id,
@@ -5133,11 +5134,14 @@ body {
               );
               game.closestSeparation = closest;
 
-              // Apply/clear the per-plane warning flag (drives the blink + HUD).
+              // Apply/clear the per-plane warning flag (drives the blink + HUD). Gated-out
+              // (landing/landed) planes are never in `warnings`, so their flag is cleared
+              // here too — no stale warning ring lingers on a plane that has touched down.
               for (const id of ids) {
                 const render = world.getComponent(id, Components.Render);
                 const ac = world.getComponent(id, Components.Aircraft);
-                const warned = warnings.has(id);
+                const grounded = ac && (ac.state === "landing" || ac.state === "landed");
+                const warned = !grounded && warnings.has(id);
                 if (render) render.warning = warned;
                 if (ac) ac.proximity = warned;
               }
@@ -5216,9 +5220,13 @@ body {
               // can be centered on screen. With no camera target this is the identity.
               ctx.save();
               applyCamera(ctx, game.camera, width, height);
-              drawAirport(ctx, game.map, activeRunwayIds(world));
+              drawAirport(ctx, game.map, activeRunwayIds(world), game.time);
               if (game.map) drawHospital(ctx, game.map.hospital);
               drawPaths(ctx, world, blinkOn);
+              // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
+              // from game.drawPreview (set by input.js on pointermove, cleared on
+              // pointerup). The sim never reads this; it is purely the pending-line cue.
+              drawDrawPreview(ctx, game.drawPreview);
               // Storm cells are drawn under the aircraft so planes read on top of them.
               if (game.weather) drawStorms(ctx, game.weather.storms, game.time);
               drawAircraft(ctx, world, game, blinkPhase);
@@ -5305,8 +5313,13 @@ body {
             return active;
           }
 
-          /** Draw runways, their approach cones, and the helipad. */
-          function drawAirport(ctx, map, activeIds) {
+          /**
+           * Draw runways, their approach cones, and the helipad. `now` is the current sim
+           * time: a runway with `now < occupiedUntil` has just taken a landing and is
+           * rendered RED ("occupied / clearing") until the ground crew clears it, when it
+           * returns to its normal/green styling.
+           */
+          function drawAirport(ctx, map, activeIds, now = 0) {
             if (!map) return;
             const active = activeIds || new Set();
 
@@ -5323,10 +5336,24 @@ body {
               const thr = runwayThreshold(runway);
               const far = runwayFarEnd(runway);
               const isActive = active.has(runway.id);
+              // Occupied: a landing is clearing the strip (now < occupiedUntil). The red
+              // "in use" styling takes visual priority over the active-amber underglow
+              // once a plane has touched down.
+              const occupied = now < (runway.occupiedUntil || 0);
 
               // An active (cleared) runway gets a faint amber underglow so it reads as the
-              // one in use, consistent with the amber cleared-path/lock cues.
-              if (isActive) {
+              // one in use, consistent with the amber cleared-path/lock cues. An occupied
+              // runway gets a RED underglow instead so "used, clearing" reads at a glance.
+              if (occupied) {
+                ctx.strokeStyle = "rgba(255, 59, 48, 0.35)";
+                ctx.lineWidth = runway.width + 7;
+                ctx.lineCap = "round";
+                ctx.beginPath();
+                ctx.moveTo(thr.x, thr.y);
+                ctx.lineTo(far.x, far.y);
+                ctx.stroke();
+                ctx.lineCap = "butt";
+              } else if (isActive) {
                 ctx.strokeStyle = "rgba(255, 190, 40, 0.30)";
                 ctx.lineWidth = runway.width + 7;
                 ctx.lineCap = "round";
@@ -5337,7 +5364,11 @@ body {
                 ctx.lineCap = "butt";
               }
 
-              ctx.strokeStyle = isActive ? "rgba(235, 240, 255, 0.95)" : "rgba(200, 220, 255, 0.85)";
+              ctx.strokeStyle = occupied
+                ? "rgba(255, 90, 80, 0.95)"
+                : isActive
+                ? "rgba(235, 240, 255, 0.95)"
+                : "rgba(200, 220, 255, 0.85)";
               ctx.lineWidth = runway.width;
               ctx.lineCap = "butt";
               ctx.beginPath();
@@ -5346,18 +5377,40 @@ body {
               ctx.stroke();
 
               // Threshold bar: a bright crossbar marking the touchdown end so the "aim
-              // here" end of the active strip is obvious.
+              // here" end of the active strip is obvious. RED while occupied.
               const perp = runway.heading + Math.PI / 2;
               const hw = runway.width / 2;
-              ctx.strokeStyle = isActive ? "rgba(255, 214, 70, 0.95)" : "rgba(220, 235, 255, 0.8)";
+              ctx.strokeStyle = occupied
+                ? "rgba(255, 59, 48, 0.95)"
+                : isActive
+                ? "rgba(255, 214, 70, 0.95)"
+                : "rgba(220, 235, 255, 0.8)";
               ctx.lineWidth = 2.5;
               ctx.beginPath();
               ctx.moveTo(thr.x - Math.cos(perp) * hw, thr.y - Math.sin(perp) * hw);
               ctx.lineTo(thr.x + Math.cos(perp) * hw, thr.y + Math.sin(perp) * hw);
               ctx.stroke();
 
+              // Edge lights: a row at each end. Red when occupied, green when clear — the
+              // literal "runway lights turn red" cue.
+              const lightColor = occupied ? "rgba(255, 59, 48, 0.95)" : "rgba(57, 255, 20, 0.9)";
+              ctx.fillStyle = lightColor;
+              for (const end of [thr, far]) {
+                for (const s of [-1, 1]) {
+                  ctx.beginPath();
+                  ctx.arc(
+                    end.x + Math.cos(perp) * hw * s,
+                    end.y + Math.sin(perp) * hw * s,
+                    1.6,
+                    0,
+                    Math.PI * 2
+                  );
+                  ctx.fill();
+                }
+              }
+
               // Centerline dashes.
-              ctx.strokeStyle = "rgba(255,255,255,0.55)";
+              ctx.strokeStyle = occupied ? "rgba(255, 120, 110, 0.6)" : "rgba(255,255,255,0.55)";
               ctx.lineWidth = 1.5;
               ctx.setLineDash([6, 8]);
               ctx.beginPath();
@@ -5483,6 +5536,21 @@ body {
                 if (mark) drawLockMarker(ctx, mark.x, mark.y, blinkOn);
               }
             }
+          }
+
+          /**
+           * Draw the in-progress drawn route (display-only preview) as a pending green
+           * dashed line, reusing the unlocked-path styling so it reads as "not yet
+           * cleared". `preview` is {id, points} or null. The committed Path keeps being
+           * drawn by drawPaths; this is only the line under the player's finger.
+           */
+          function drawDrawPreview(ctx, preview) {
+            if (!preview || !preview.points || preview.points.length < 2) return;
+            ctx.strokeStyle = "rgba(57, 255, 20, 0.55)";
+            ctx.lineWidth = 1.8;
+            ctx.setLineDash([4, 4]);
+            strokePoly(ctx, preview.points);
+            ctx.setLineDash([]);
           }
 
           /** Stroke an open polyline through the given points. */
@@ -5701,6 +5769,7 @@ body {
           exports.drawRadarBackground = drawRadarBackground;
           exports.drawAirport = drawAirport;
           exports.drawPaths = drawPaths;
+          exports.drawDrawPreview = drawDrawPreview;
           exports.drawAircraft = drawAircraft;
         },
         "src/ui/hud.js": function (exports, require) {
@@ -6671,6 +6740,20 @@ body {
           }
 
           /**
+           * Build a DISPLAY-ONLY preview descriptor for an in-progress drawn route. This
+           * is the only channel the render layer reads for the pending line while the
+           * player drags; the authoritative sim (movement/landing/collision) never reads
+           * it, so the plane keeps flying its committed Path until pointerup. Pure helper
+           * (returns a fresh snapshot of the points so later mutation of `points` cannot
+           * retroactively change an already-published preview). Returns null for a route
+           * with fewer than two points (nothing to draw yet).
+           */
+          function setDrawPreview(id, points) {
+            if (!points || points.length < 2) return null;
+            return { id, points: points.map((p) => ({ x: p.x, y: p.y })) };
+          }
+
+          /**
            * Attach pointer handlers to a canvas for a game instance. Returns a detach
            * function that removes the listeners. Browser-only; call from start().
            */
@@ -6730,14 +6813,12 @@ body {
               const last = drawing.points[drawing.points.length - 1];
               if (Math.hypot(pt.x - last.x, pt.y - last.y) >= MIN_POINT_DISTANCE) {
                 drawing.points.push(pt);
-                // Live preview: write the raw points so the render system shows the path.
-                const path = world.getComponent(drawing.id, Components.Path);
-                if (path) {
-                  path.points = drawing.points.slice();
-                  path.built = null;
-                  path.progress = 0;
-                  path.locked = false;
-                }
+                // DISPLAY-ONLY live preview. Crucially we do NOT mutate the committed Path
+                // here: the plane must keep flying its current route while the player
+                // draws. The in-progress route lives only in `drawing` and is mirrored to
+                // a display-only channel the render layer reads (same convention as the
+                // radar-sweep fields). The authoritative sim never reads this.
+                game.drawPreview = setDrawPreview(drawing.id, drawing.points);
               }
               ev.preventDefault();
             }
@@ -6747,6 +6828,9 @@ body {
               const id = drawing.id;
               const points = drawing.points;
               drawing = null;
+              // Drawing is done: clear the display-only preview. The route is now
+              // committed onto the Path via finalizePath below.
+              game.drawPreview = null;
               try {
                 canvas.releasePointerCapture(ev.pointerId);
               } catch (_) {
@@ -6902,6 +6986,7 @@ body {
 
           exports.screenToWorld = screenToWorld;
           exports.hitTest = hitTest;
+          exports.setDrawPreview = setDrawPreview;
           exports.attachInput = attachInput;
           exports.finalizePath = finalizePath;
           exports.snapToLanding = snapToLanding;

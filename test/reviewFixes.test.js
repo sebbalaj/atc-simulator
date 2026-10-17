@@ -216,7 +216,9 @@ test("auto-holding OFF: an un-cleared finished route just completes (no orbit)",
   const game = buildHoldingGame(false);
   const id = spawnShortRoute(game);
   const dt = 1 / 60;
-  for (let i = 0; i < 300; i++) game.movement(dt);
+  // 60px route at the FEAT-003 slowed light speed (10px/s) needs ~360 ticks to
+  // fly off the end; run 600 for margin so the route actually completes.
+  for (let i = 0; i < 600; i++) game.movement(dt);
   const path = game.world.getComponent(id, Components.Path);
   assert.ok(!path.holding, "no holding orbit when the upgrade is not owned");
   assert.equal(path.completed, true, "route completed and the plane flies on straight");
@@ -228,7 +230,9 @@ test("auto-holding ON: an un-cleared finished route converts into a holding orbi
   game.bus.on("holding:auto", () => autoHold++);
   const id = spawnShortRoute(game);
   const dt = 1 / 60;
-  for (let i = 0; i < 300; i++) game.movement(dt);
+  // 60px route at the FEAT-003 slowed light speed (10px/s) needs ~360 ticks to
+  // reach the end before auto-holding converts it; run 600 for margin.
+  for (let i = 0; i < 600; i++) game.movement(dt);
   const path = game.world.getComponent(id, Components.Path);
   assert.ok(autoHold >= 1, "a holding:auto event fired (upgrade took effect)");
   assert.equal(path.holding, true, "plane auto-placed into a holding orbit");

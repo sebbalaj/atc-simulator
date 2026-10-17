@@ -204,9 +204,16 @@ test("speed ordering: helicopter <= light < commercial < supersonic", () => {
   assert.ok(light < commercial, "light is slower than commercial");
   assert.ok(commercial < supersonic, "commercial is slower than supersonic");
 
+  // FEAT-003 (second slowdown) set speeds to exactly 0.25x of the prior band.
+  // Pin the exact values so a regression back to the old fast numbers fails.
+  assert.equal(heli, 7.5, "helicopter cruise speed is 7.5 px/s");
+  assert.equal(light, 10, "light cruise speed is 10 px/s");
+  assert.equal(commercial, 17.5, "commercial cruise speed is 17.5 px/s");
+  assert.equal(supersonic, 25, "supersonic cruise speed is 25 px/s");
+
   // The retune kept speeds in a controllable band (no class zooms across the
   // radar). Guards against a future regression back to the old fast values.
-  assert.ok(supersonic <= 120, "supersonic stays in the slowed-down band");
+  assert.ok(supersonic <= 30, "supersonic stays in the slowed-down band");
 });
 
 test("gentle turns within the SUPERSONIC limit are accepted", () => {

@@ -11,14 +11,17 @@
 //   SUPERSONIC (mil): fastest, tiny fuel margin, hard cap on per-point turn
 //                     angle (cannot make sharp corners).
 //
-// FEAT-003 tuning: cruise speeds were cut to ~0.44x (light 90->40, heli 70->30,
-// commercial 160->70, supersonic 230->100) so aircraft read at a controllable
-// pace instead of zooming across the radar. Because fuelMax is measured in
-// SECONDS of flight, the reachable distance per second shrank with the speed
-// cut, so fuelMax was scaled up ~2.3x (keeping SUPERSONIC's margin tightest) and
-// the economy efficiency window was widened to match the longer time-in-airspace
-// (see economy.js). Class ORDERING is preserved: helicopter <= light <
-// commercial < supersonic.
+// FEAT-003 tuning: cruise speeds were cut to 0.25x of the prior controllable
+// band (light 40->10, heli 30->7.5, commercial 70->17.5, supersonic 100->25) so
+// aircraft read at a calm, deliberate pace. Because fuelMax is measured in
+// SECONDS of flight, the reachable distance per fuel-second drops to 1/4 with a
+// 1/4-speed cut, so fuelMax was scaled up ~4x (light 200->640, heli 250->760,
+// commercial 340->1000, supersonic 150->480) to keep planes able to reach a
+// runway from the spawn perimeter with margin; SUPERSONIC keeps the tightest
+// reserve of the four. The economy efficiency window (economy.js) was widened
+// and the spawn cadence (spawnSystem.js) lengthened to match the ~4x-longer
+// time-in-airspace. Class ORDERING is preserved: helicopter 7.5 <= light 10 <
+// commercial 17.5 < supersonic 25.
 
 /** Canonical aircraft kind constants. */
 export const AircraftKind = Object.freeze({
@@ -51,13 +54,13 @@ export const AIRCRAFT_DEFS = Object.freeze({
   [AircraftKind.LIGHT]: {
     kind: AircraftKind.LIGHT,
     name: "Light",
-    speed: 40,
+    speed: 10,
     turnRateMax: Math.PI, // ~180 deg/s: very nimble
     maxTurnAngle: (150 * Math.PI) / 180, // can nearly reverse at a point
     hitboxRadius: 7,
     separationRadius: 46,
     wakeSeparation: 0,
-    fuelMax: 200,
+    fuelMax: 640,
     runwayLengthRequired: 90,
     passengers: [1, 4],
     color: "#8fff6a",
@@ -68,13 +71,13 @@ export const AIRCRAFT_DEFS = Object.freeze({
   [AircraftKind.COMMERCIAL]: {
     kind: AircraftKind.COMMERCIAL,
     name: "Commercial",
-    speed: 70,
+    speed: 17.5,
     turnRateMax: (70 * Math.PI) / 180, // wide, airliner-like turns
     maxTurnAngle: (70 * Math.PI) / 180,
     hitboxRadius: 11,
     separationRadius: 64,
     wakeSeparation: 90, // trailing traffic must stay well clear of the wake
-    fuelMax: 340,
+    fuelMax: 1000,
     runwayLengthRequired: 190,
     passengers: [90, 220],
     color: "#39ff14",
@@ -85,13 +88,13 @@ export const AIRCRAFT_DEFS = Object.freeze({
   [AircraftKind.HELICOPTER]: {
     kind: AircraftKind.HELICOPTER,
     name: "Helicopter",
-    speed: 30,
+    speed: 7.5,
     turnRateMax: Math.PI, // can pivot freely
     maxTurnAngle: Math.PI, // no corner restriction
     hitboxRadius: 8,
     separationRadius: 42,
     wakeSeparation: 0,
-    fuelMax: 250,
+    fuelMax: 760,
     runwayLengthRequired: 0, // uses the helipad, not a runway
     passengers: [1, 8],
     color: "#6ad1ff",
@@ -102,13 +105,13 @@ export const AIRCRAFT_DEFS = Object.freeze({
   [AircraftKind.SUPERSONIC]: {
     kind: AircraftKind.SUPERSONIC,
     name: "Supersonic",
-    speed: 100,
+    speed: 25,
     turnRateMax: (45 * Math.PI) / 180, // sluggish to turn at speed
     maxTurnAngle: (35 * Math.PI) / 180, // refuses sharp corners
     hitboxRadius: 9,
     separationRadius: 72,
     wakeSeparation: 0,
-    fuelMax: 150, // minimal reserve (tightest margin of the four classes)
+    fuelMax: 480, // minimal reserve (tightest margin of the four classes)
     runwayLengthRequired: 220,
     passengers: [1, 2],
     color: "#ffd23b",

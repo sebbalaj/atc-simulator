@@ -51,21 +51,30 @@ test("revenue: more passengers earns more (same type/efficiency)", () => {
 });
 
 test("revenue: a shorter time in the airspace earns an efficiency bonus", () => {
+  // Compare a prompt landing (inside the full-bonus window) against a very slow
+  // one (near the floor). Reference the retuned constants so the relationship
+  // holds regardless of the exact window magnitudes.
   const quick = computeLandingRevenue({
     kind: AircraftKind.COMMERCIAL,
     passengers: 150,
-    timeInAirspace: 10,
+    timeInAirspace: EFFICIENCY_FULL_TIME / 4,
   });
   const slow = computeLandingRevenue({
     kind: AircraftKind.COMMERCIAL,
     passengers: 150,
-    timeInAirspace: 110,
+    timeInAirspace: EFFICIENCY_SLOW_TIME,
   });
   assert.ok(quick > slow, "faster landing pays more than a slow one");
 
   // The multiplier itself is monotonically non-increasing with time.
-  assert.ok(efficiencyMultiplier(5) >= efficiencyMultiplier(60));
-  assert.ok(efficiencyMultiplier(60) >= efficiencyMultiplier(200));
+  assert.ok(
+    efficiencyMultiplier(EFFICIENCY_FULL_TIME / 4) >=
+      efficiencyMultiplier(EFFICIENCY_FULL_TIME + 60)
+  );
+  assert.ok(
+    efficiencyMultiplier(EFFICIENCY_FULL_TIME + 60) >=
+      efficiencyMultiplier(EFFICIENCY_SLOW_TIME - 10)
+  );
   // Full bonus at/under the full-bonus threshold; floor far out. These
   // reference the tunable constants (not magic numbers) so the relationship
   // holds regardless of the FEAT-003 retune.
@@ -97,8 +106,19 @@ test("efficiency: retuned thresholds still yield MAX at t=0 and MIN at/after slo
   const midMult = efficiencyMultiplier(mid);
   assert.ok(midMult < EFFICIENCY_MAX && midMult > EFFICIENCY_MIN, "decays in between");
   // Sanity: the full-bonus window is wide enough that a promptly-handled plane
-  // (landed within the full-time window) earns the full multiplier.
-  assert.ok(EFFICIENCY_FULL_TIME >= 30, "full-bonus window scaled up for slower aircraft");
+  // (landed within the full-time window) earns the full multiplier. After the
+  // 0.25x-speed retune the window was widened to cover a normal slow route.
+  assert.ok(EFFICIENCY_FULL_TIME >= 100, "full-bonus window scaled up for slower aircraft");
+
+  // A promptly-handled plane (short time-in-airspace, e.g. the ~7s a directly
+  // routed light aircraft takes in the headless smoke scenario) earns the full
+  // EFFICIENCY_MAX multiplier under the widened window.
+  assert.equal(efficiencyMultiplier(8), EFFICIENCY_MAX, "a prompt landing earns the full bonus");
+  assert.equal(
+    computeLandingRevenue({ kind: AircraftKind.LIGHT, passengers: 3, timeInAirspace: 8 }),
+    computeLandingRevenue({ kind: AircraftKind.LIGHT, passengers: 3, efficiencyBonus: EFFICIENCY_MAX }),
+    "prompt landing revenue matches an explicit EFFICIENCY_MAX award"
+  );
 });
 
 test("bank: credit, debit, and canAfford behave correctly", () => {
