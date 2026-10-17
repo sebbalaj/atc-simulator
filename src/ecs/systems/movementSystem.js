@@ -62,9 +62,15 @@ export function createMovementSystem(game) {
         t.heading = sample.heading;
 
         if (path.progress >= built.length) {
-          // Reached the end of the drawn route.
-          path.completed = true;
-          completed = true;
+          if (path.holding && built.length > 0) {
+            // Holding-pattern orbit: loop back to the start so the plane keeps
+            // circling the hold fix (and keeps burning fuel) until re-routed.
+            path.progress = path.progress % built.length;
+          } else {
+            // Reached the end of the drawn route.
+            path.completed = true;
+            completed = true;
+          }
         }
       } else {
         // No path: fly straight ahead on the current heading.

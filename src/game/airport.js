@@ -174,6 +174,26 @@ export function createMap1(width, height) {
     radius: 16,
   };
 
+  // Hospital POI: medical-evac helicopters must be routed directly over this
+  // point before their landing on the helipad is accepted. Placed away from the
+  // field so it forces a deliberate detour.
+  const hospital = {
+    id: "HOSP",
+    x: cx - width * 0.28,
+    y: cy + height * 0.26,
+    radius: 22, // a route passing within this radius "overflies" the hospital
+  };
+
+  // A holding fix: when the controller routes a plane here (without a landing
+  // clearance) it flies a circular orbit, burning fuel over time. Used by the
+  // fuel-emergency logic.
+  const holdFix = {
+    id: "HOLD1",
+    x: cx + width * 0.3,
+    y: cy + height * 0.28,
+    radius: 34, // orbit radius
+  };
+
   return {
     id: "map1",
     name: "Regional Airfield",
@@ -182,9 +202,49 @@ export function createMap1(width, height) {
     center: { x: cx, y: cy },
     runways: [runwayA, runwayB],
     helipad,
+    hospital,
+    holdFix,
     // Aircraft enter from this perimeter radius around the center.
     spawnRadius: Math.min(width, height) * 0.52,
   };
+}
+
+/**
+ * Whether a point overflies the hospital POI (within its radius). Pure function.
+ */
+export function isOverHospital(hospital, x, y) {
+  if (!hospital) return false;
+  return Math.hypot(x - hospital.x, y - hospital.y) <= hospital.radius;
+}
+
+/**
+ * Whether any point of a drawn polyline route passes over the hospital POI.
+ * Used by the medical-evac gate so the controller can satisfy the requirement
+ * by drawing a path that crosses the hospital on the way to the pad. Pure.
+ */
+export function routePassesHospital(hospital, points) {
+  if (!hospital || !points || points.length === 0) return false;
+  for (const p of points) {
+    if (isOverHospital(hospital, p.x, p.y)) return true;
+  }
+  return false;
+}
+
+/**
+ * Build a circular holding-pattern orbit (a closed polyline) centered on a hold
+ * fix. A plane routed here with no landing clearance flies the loop and burns
+ * fuel. Pure function returning control points suitable for buildPath.
+ * @param {{x:number,y:number,radius:number}} fix
+ * @param {number} [segments] number of points around the circle
+ */
+export function holdingPatternPoints(fix, segments = 12) {
+  const pts = [];
+  const r = fix.radius ?? 34;
+  for (let i = 0; i <= segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    pts.push({ x: fix.x + Math.cos(a) * r, y: fix.y + Math.sin(a) * r });
+  }
+  return pts;
 }
 
 /**

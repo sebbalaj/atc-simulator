@@ -13,6 +13,8 @@ import { createSpatialHash } from "./core/spatialHash.js";
 import { createRng } from "./core/rng.js";
 import { createMap1 } from "./game/airport.js";
 import { createSpawnSystem } from "./ecs/systems/spawnSystem.js";
+import { createWeatherSystem } from "./ecs/systems/weatherSystem.js";
+import { createEmergencySystem } from "./ecs/systems/emergencySystem.js";
 import { createMovementSystem } from "./ecs/systems/movementSystem.js";
 import { createLandingSystem } from "./ecs/systems/landingSystem.js";
 import { createCollisionSystem } from "./ecs/systems/collisionSystem.js";
@@ -66,6 +68,11 @@ export function createGame(options = {}) {
     gameOver: false,
     gameOverReason: null,
     closestSeparation: null,
+    // Live weather snapshot (populated by the weather system each tick).
+    weather: null,
+    // Whether the ILS upgrade is owned. FEAT-005 flips this on purchase; until
+    // then fog always reduces visibility. Fog/landing code reads it defensively.
+    ilsOwned: false,
     console: null,
     stats: { landed: 0, crashed: 0 },
     _accumulator: 0,
@@ -76,6 +83,8 @@ export function createGame(options = {}) {
 
   // Build systems bound to this game.
   const spawnSystem = createSpawnSystem(game);
+  const weatherSystem = createWeatherSystem(game);
+  const emergencySystem = createEmergencySystem(game);
   const movementSystem = createMovementSystem(game);
   const landingSystem = createLandingSystem(game);
   const collisionSystem = createCollisionSystem(game);
@@ -117,6 +126,8 @@ export function createGame(options = {}) {
     }
     if (game.gameOver) return;
     spawnSystem(dt);
+    weatherSystem(dt);
+    emergencySystem(dt);
     movementSystem(dt);
     landingSystem(dt);
     collisionSystem(dt);
@@ -178,6 +189,7 @@ export function createGame(options = {}) {
   /** Stop the loop and detach handlers. */
   function stop() {
     game.running = false;
+    if (emergencySystem && emergencySystem.detach) emergencySystem.detach();
     if (game._detachInput) {
       game._detachInput();
       game._detachInput = null;
@@ -217,6 +229,8 @@ export function createGame(options = {}) {
   game.update = update; // exposed for headless/testing
   game.render = render;
   game.spawnSystem = spawnSystem; // exposed for seeding/testing
+  game.weatherSystem = weatherSystem; // exposed for manual triggering/testing
+  game.emergencySystem = emergencySystem;
   return game;
 }
 

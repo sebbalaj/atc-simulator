@@ -15,6 +15,8 @@ import {
   isRunwayClear,
   occupyRunway,
 } from "../../game/airport.js";
+import { isApproachDirectionValid } from "../../game/weather.js";
+import { isMedicalLandingAllowed, EmergencyType } from "../../game/emergencies.js";
 
 /** Build the ECS landing system bound to a game instance. */
 export function createLandingSystem(game) {
@@ -46,6 +48,22 @@ export function createLandingSystem(game) {
     return map.runways.find((r) => r.id === rid);
   }
 
+  /**
+   * Whether a resolved landing direction is legal under the current wind. With
+   * no weather state (headless construction) all directions are allowed.
+   * Helipad landings (no fixed direction) are always wind-legal.
+   */
+  function windAllows(landingHeading) {
+    const w = game.weather;
+    if (!w || w.windDirection == null || landingHeading == null) return true;
+    return isApproachDirectionValid(landingHeading, w.windDirection, w.windTolerance);
+  }
+
+  /** Whether a medical-evac aircraft has satisfied the hospital-overflight gate. */
+  function medicalAllows(ac) {
+    return isMedicalLandingAllowed(ac.emergency);
+  }
+
   return function landingSystem(dt) {
     if (game.gameOver) return;
     const ids = world.query(Components.Transform, Components.Aircraft, Components.Path);
@@ -64,10 +82,18 @@ export function createLandingSystem(game) {
 
       if (!path.points || path.points.length < 2) continue;
 
+      // Medical evac must overfly the hospital POI before any landing clears.
+      if (!medicalAllows(ac)) continue;
+
       // Preferred path: a clearance was resolved when the controller snapped the
       // route into an approach cone / onto the helipad (see input.finalizePath).
       // Commit the landing once the plane reaches the end of that cleared route.
       if (path.locked && ac.clearance && path.built && path.progress >= path.built.length - 0.5) {
+        // Reject a runway landing whose direction is now illegal under the wind
+        // (a wind shift can invalidate a previously-cleared approach).
+        if (ac.clearance.surface === "runway" && !windAllows(ac.clearance.heading)) {
+          continue;
+        }
         commitLanding(id, t, ac, path);
         continue;
       }
@@ -81,6 +107,7 @@ export function createLandingSystem(game) {
         if (target.type === "runway") {
           const runway = target.surface;
           if (!isRunwayClear(runway, game.time)) continue;
+          if (!windAllows(target.direction)) continue;
           const dirRunway = { ...runway, heading: target.direction };
           ac.clearance = {
             surface: "runway",
@@ -123,12 +150,19 @@ export function createLandingSystem(game) {
     if (toStop <= step || toStop < 2) {
       // Touchdown complete: remove the entity and award the landing.
       const timeInAirspace = game.time - (ac.spawnTime ?? game.time);
+      const wasEmergency = !!(
+        ac.emergency &&
+        (ac.emergency.type === EmergencyType.MAYDAY ||
+          ac.emergency.type === EmergencyType.MEDICAL ||
+          ac.emergency.type === EmergencyType.FUEL)
+      );
       world.destroyEntity(id);
       bus.emit("aircraft:landed", {
         id,
         kind: ac.kind,
         passengers: ac.passengers,
         timeInAirspace,
+        _emergency: wasEmergency ? ac.emergency.type : null,
       });
       return;
     }

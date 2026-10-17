@@ -20,6 +20,8 @@ import {
   findLandingTarget,
   runwayThreshold,
   runwayFarEnd,
+  holdingPatternPoints,
+  isOverHospital,
 } from "../game/airport.js";
 
 /** Minimum world-space distance between appended control points (px). */
@@ -181,6 +183,7 @@ export function finalizePath(game, id, points) {
 
   const snapped = snapToLanding(map, points, approachHeading, def);
 
+  path.holding = snapped.holding ?? false;
   path.points = snapped.points;
   path.progress = 0;
   path.built = null;
@@ -201,7 +204,20 @@ export function finalizePath(game, id, points) {
 export function snapToLanding(map, points, approachHeading, def) {
   const end = points[points.length - 1];
   const target = findLandingTarget(map, end, approachHeading, def);
-  if (!target) return { points: points.slice(), locked: false, clearance: null };
+  if (!target) {
+    // Holding pattern: if the route ends near the hold fix, append a circular
+    // orbit so the plane loops there (burning fuel) instead of flying off.
+    if (map.holdFix && isNearHoldFix(map.holdFix, end)) {
+      const orbit = holdingPatternPoints(map.holdFix);
+      return {
+        points: points.concat(orbit),
+        locked: false,
+        holding: true,
+        clearance: null,
+      };
+    }
+    return { points: points.slice(), locked: false, clearance: null };
+  }
 
   if (target.type === "runway") {
     const runway = target.surface;
@@ -235,6 +251,15 @@ export function snapToLanding(map, points, approachHeading, def) {
     clearance: { surface: "helipad", stop: { x: pad.x, y: pad.y } },
   };
 }
+
+/** Whether a point is close enough to a hold fix to trigger a holding orbit. */
+export function isNearHoldFix(fix, point) {
+  if (!fix) return false;
+  return Math.hypot(point.x - fix.x, point.y - fix.y) <= fix.radius * 1.5;
+}
+
+/** Re-export for callers that need the hospital overflight test. */
+export { isOverHospital };
 
 /** For internal reuse. */
 export { MIN_POINT_DISTANCE };

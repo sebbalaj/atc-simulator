@@ -13,6 +13,12 @@ import {
   drawLowFuelGauges,
   drawProximityAlarm,
   drawEventBanner,
+  drawStorms,
+  drawHospital,
+  drawFog,
+  drawWindIndicator,
+  drawEmergencyFlash,
+  aircraftFogAlpha,
 } from "../../ui/hud.js";
 
 // Separation at/under which the proximity alarm vignette begins. Matches the
@@ -34,12 +40,20 @@ export function createRenderSystem(game) {
     ctx.save();
     applyCamera(ctx, game.camera, width, height);
     drawAirport(ctx, game.map);
+    if (game.map) drawHospital(ctx, game.map.hospital);
     drawPaths(ctx, world);
+    // Storm cells are drawn under the aircraft so planes read on top of them.
+    if (game.weather) drawStorms(ctx, game.weather.storms, game.time);
     drawAircraft(ctx, world, game, blinkPhase);
+    drawEmergencyFlash(ctx, world, blinkOn);
     drawLowFuelGauges(ctx, world, blinkOn);
     ctx.restore();
 
+    // Fog dims the whole field (screen space, over the world).
+    if (game.weather) drawFog(ctx, width, height, game.weather.fogIntensity);
+
     // Screen-space overlays.
+    if (game.weather) drawWindIndicator(ctx, game.weather);
     drawProximityAlarm(ctx, width, height, game.closestSeparation, ALARM_THRESHOLD, blinkOn);
     if (game.banner && game.banner.text) {
       drawEventBanner(ctx, width, game.banner.text, game.banner.alpha ?? 1);
@@ -208,7 +222,12 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
     const warning = render.warning;
     const selected = game.selectedId === id;
 
+    // Fog hides planes beyond the visibility range (unless ILS is owned).
+    const fogAlpha = aircraftFogAlpha(game.weather, game.map, t.x, t.y);
+    if (fogAlpha <= 0.02) continue;
+
     ctx.save();
+    ctx.globalAlpha = fogAlpha;
     ctx.translate(t.x, t.y);
 
     // Selection ring (drawn unrotated, around the icon).

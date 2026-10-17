@@ -53,6 +53,9 @@ export function Path(points = [], opts = {}) {
     progress: opts.progress ?? 0,
     locked: opts.locked ?? false,
     built: opts.built ?? null,
+    // True when the route is a holding-pattern orbit (burns fuel, not a landing).
+    holding: opts.holding ?? false,
+    completed: opts.completed ?? false,
   };
 }
 

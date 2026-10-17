@@ -10,6 +10,7 @@ export const PENALTY = Object.freeze({
   nearMiss: 8, // two planes breached separation (near-miss)
   fuelOut: 25, // a plane ran out of fuel
   excessiveHold: 6, // a plane was held/circled beyond the threshold
+  stormLoss: 20, // a plane flew into a thunderstorm cell and was lost
   crash: 100, // a mid-air collision wipes the rest out
 });
 
@@ -23,7 +24,7 @@ export function createReputation(start = REPUTATION_MAX) {
   return {
     score: clamp(start),
     // Lifetime incident tally for shift-summary screens (FEAT-005).
-    incidents: { nearMiss: 0, fuelOut: 0, excessiveHold: 0, crash: 0 },
+    incidents: { nearMiss: 0, fuelOut: 0, excessiveHold: 0, stormLoss: 0, crash: 0 },
 
     /**
      * Apply a named penalty. Unknown types are ignored. Returns the new score.
