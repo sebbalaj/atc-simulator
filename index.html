@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#001405" />
+    <title>ATC Simulator</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div id="game-root">
+      <!-- Radar scope: top ~75% of the viewport. -->
+      <canvas id="radar-canvas"></canvas>
+
+      <!-- ATC console: bottom ~25%. Populated by later features. -->
+      <section id="console" aria-label="ATC console">
+        <div class="console-row">
+          <span id="shift-clock" class="console-field">06:00</span>
+          <span id="bank-balance" class="console-field">$0</span>
+        </div>
+        <div class="console-row">
+          <div id="reputation-meter" class="reputation-meter">
+            <div class="reputation-fill"></div>
+          </div>
+        </div>
+        <div id="flight-strips" class="flight-strips" aria-label="Flight strips"></div>
+      </section>
+    </div>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

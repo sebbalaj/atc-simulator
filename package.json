@@ -1,0 +1,13 @@
+{
+  "name": "atc-simulator",
+  "version": "0.1.0",
+  "description": "Dependency-free 2D Air Traffic Control simulator: portrait, touch-first, HTML5 Canvas, vanilla ES modules with an ECS architecture.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "check": "echo 'Run: node --check on each .js under src/ and test/ (see README).'",
+    "start": "python3 -m http.server 8000"
+  },
+  "license": "MIT"
+}
