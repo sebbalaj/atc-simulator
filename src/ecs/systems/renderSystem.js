@@ -40,9 +40,13 @@ export function createRenderSystem(game) {
     // can be centered on screen. With no camera target this is the identity.
     ctx.save();
     applyCamera(ctx, game.camera, width, height);
-    drawAirport(ctx, game.map, activeRunwayIds(world));
+    drawAirport(ctx, game.map, activeRunwayIds(world), game.time);
     if (game.map) drawHospital(ctx, game.map.hospital);
     drawPaths(ctx, world, blinkOn);
+    // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
+    // from game.drawPreview (set by input.js on pointermove, cleared on
+    // pointerup). The sim never reads this; it is purely the pending-line cue.
+    drawDrawPreview(ctx, game.drawPreview);
     // Storm cells are drawn under the aircraft so planes read on top of them.
     if (game.weather) drawStorms(ctx, game.weather.storms, game.time);
     drawAircraft(ctx, world, game, blinkPhase);
@@ -129,8 +133,13 @@ function activeRunwayIds(world) {
   return active;
 }
 
-/** Draw runways, their approach cones, and the helipad. */
-export function drawAirport(ctx, map, activeIds) {
+/**
+ * Draw runways, their approach cones, and the helipad. `now` is the current sim
+ * time: a runway with `now < occupiedUntil` has just taken a landing and is
+ * rendered RED ("occupied / clearing") until the ground crew clears it, when it
+ * returns to its normal/green styling.
+ */
+export function drawAirport(ctx, map, activeIds, now = 0) {
   if (!map) return;
   const active = activeIds || new Set();
 
@@ -147,10 +156,24 @@ export function drawAirport(ctx, map, activeIds) {
     const thr = runwayThreshold(runway);
     const far = runwayFarEnd(runway);
     const isActive = active.has(runway.id);
+    // Occupied: a landing is clearing the strip (now < occupiedUntil). The red
+    // "in use" styling takes visual priority over the active-amber underglow
+    // once a plane has touched down.
+    const occupied = now < (runway.occupiedUntil || 0);
 
     // An active (cleared) runway gets a faint amber underglow so it reads as the
-    // one in use, consistent with the amber cleared-path/lock cues.
-    if (isActive) {
+    // one in use, consistent with the amber cleared-path/lock cues. An occupied
+    // runway gets a RED underglow instead so "used, clearing" reads at a glance.
+    if (occupied) {
+      ctx.strokeStyle = "rgba(255, 59, 48, 0.35)";
+      ctx.lineWidth = runway.width + 7;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(thr.x, thr.y);
+      ctx.lineTo(far.x, far.y);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+    } else if (isActive) {
       ctx.strokeStyle = "rgba(255, 190, 40, 0.30)";
       ctx.lineWidth = runway.width + 7;
       ctx.lineCap = "round";
@@ -161,7 +184,11 @@ export function drawAirport(ctx, map, activeIds) {
       ctx.lineCap = "butt";
     }
 
-    ctx.strokeStyle = isActive ? "rgba(235, 240, 255, 0.95)" : "rgba(200, 220, 255, 0.85)";
+    ctx.strokeStyle = occupied
+      ? "rgba(255, 90, 80, 0.95)"
+      : isActive
+      ? "rgba(235, 240, 255, 0.95)"
+      : "rgba(200, 220, 255, 0.85)";
     ctx.lineWidth = runway.width;
     ctx.lineCap = "butt";
     ctx.beginPath();
@@ -170,18 +197,40 @@ export function drawAirport(ctx, map, activeIds) {
     ctx.stroke();
 
     // Threshold bar: a bright crossbar marking the touchdown end so the "aim
-    // here" end of the active strip is obvious.
+    // here" end of the active strip is obvious. RED while occupied.
     const perp = runway.heading + Math.PI / 2;
     const hw = runway.width / 2;
-    ctx.strokeStyle = isActive ? "rgba(255, 214, 70, 0.95)" : "rgba(220, 235, 255, 0.8)";
+    ctx.strokeStyle = occupied
+      ? "rgba(255, 59, 48, 0.95)"
+      : isActive
+      ? "rgba(255, 214, 70, 0.95)"
+      : "rgba(220, 235, 255, 0.8)";
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(thr.x - Math.cos(perp) * hw, thr.y - Math.sin(perp) * hw);
     ctx.lineTo(thr.x + Math.cos(perp) * hw, thr.y + Math.sin(perp) * hw);
     ctx.stroke();
 
+    // Edge lights: a row at each end. Red when occupied, green when clear — the
+    // literal "runway lights turn red" cue.
+    const lightColor = occupied ? "rgba(255, 59, 48, 0.95)" : "rgba(57, 255, 20, 0.9)";
+    ctx.fillStyle = lightColor;
+    for (const end of [thr, far]) {
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(
+          end.x + Math.cos(perp) * hw * s,
+          end.y + Math.sin(perp) * hw * s,
+          1.6,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+    }
+
     // Centerline dashes.
-    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    ctx.strokeStyle = occupied ? "rgba(255, 120, 110, 0.6)" : "rgba(255,255,255,0.55)";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([6, 8]);
     ctx.beginPath();
@@ -307,6 +356,21 @@ export function drawPaths(ctx, world, blinkOn = true) {
       if (mark) drawLockMarker(ctx, mark.x, mark.y, blinkOn);
     }
   }
+}
+
+/**
+ * Draw the in-progress drawn route (display-only preview) as a pending green
+ * dashed line, reusing the unlocked-path styling so it reads as "not yet
+ * cleared". `preview` is {id, points} or null. The committed Path keeps being
+ * drawn by drawPaths; this is only the line under the player's finger.
+ */
+export function drawDrawPreview(ctx, preview) {
+  if (!preview || !preview.points || preview.points.length < 2) return;
+  ctx.strokeStyle = "rgba(57, 255, 20, 0.55)";
+  ctx.lineWidth = 1.8;
+  ctx.setLineDash([4, 4]);
+  strokePoly(ctx, preview.points);
+  ctx.setLineDash([]);
 }
 
 /** Stroke an open polyline through the given points. */

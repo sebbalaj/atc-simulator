@@ -1,10 +1,12 @@
 // Landing system. When an aircraft's drawn path terminates in a runway approach
 // cone it is aligned with (correct angle + heading + the runway long enough for
 // the class), or on the helipad for a helicopter, the approach is locked
-// ("cleared to land"). The plane then rolls down the runway; once it reaches the
-// stop end the entity is removed and 'aircraft:landed' is emitted with
-// {kind, passengers, timeInAirspace}. Runway occupancy/clear-time blocks the
-// next landing on the same runway.
+// ("cleared to land"). The plane touches down IMMEDIATELY on reaching the
+// threshold (the tail of the cleared route) / pad: the entity is removed and
+// 'aircraft:landed' is emitted with {kind, passengers, timeInAirspace,
+// _emergency}. No rollout to the far end (so slow/short/moving-runway landings
+// resolve promptly). Runway occupancy/clear-time blocks the next landing on the
+// same runway.
 
 import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
@@ -76,9 +78,9 @@ export function createLandingSystem(game) {
       const path = world.getComponent(id, Components.Path);
       const def = getAircraftDef(ac.kind);
 
-      if (ac.state === "landing") {
-        // Roll down the active surface toward the stop point.
-        advanceLanding(id, t, ac, def, dt);
+      if (ac.state === "landing" || ac.state === "landed") {
+        // Already touched down this tick (threshold landing resolves
+        // immediately in commitLanding); nothing more to do.
         continue;
       }
 
@@ -132,21 +134,26 @@ export function createLandingSystem(game) {
       const runway = runwayById(c.runwayId);
       if (runway) {
         if (!isRunwayClear(runway, game.time)) return; // hold: runway busy
+        // Mark the strip occupied at touchdown; it stays red/blocked until
+        // now >= occupiedUntil (now + clearTime, shrunk by the ground-crew
+        // upgrade). Called exactly once per landing.
         occupyRunway(runway, game.time);
       }
       announceCleared(id, ac, c);
-      ac.landing = {
-        surface: "runway",
-        heading: c.heading,
-        stop: c.stop,
-        // Moving-runway (carrier) landings track the live far-end each tick.
-        runwayId: runway && runway.moving ? c.runwayId : null,
-      };
+      ac.state = "landing";
+      // Threshold landing: touchdown is immediate at the runway threshold (the
+      // tail of the cleared route), so there is no rollout to the far end. This
+      // keeps short/slow-speed and moving-runway (carrier) landings resolving
+      // promptly instead of chasing the far end.
+      ac.landing = { surface: "runway", heading: c.heading };
     } else {
       announceCleared(id, ac, c);
-      ac.landing = { surface: "helipad", heading: t.heading, stop: c.stop };
+      ac.state = "landing";
+      ac.landing = { surface: "helipad", heading: t.heading };
     }
-    ac.state = "landing";
+    // Resolve the landed/removed transition immediately on reaching the
+    // threshold / pad.
+    completeLanding(id, ac);
   }
 
   /**
@@ -164,45 +171,28 @@ export function createLandingSystem(game) {
     });
   }
 
-  function advanceLanding(id, t, ac, def, dt) {
-    const info = ac.landing;
-    // For a moving runway (carrier) refresh the stop point to the live far-end
-    // so the rollout tracks the deck as it translates under the aircraft.
-    if (info.runwayId) {
-      const runway = runwayById(info.runwayId);
-      if (runway) {
-        info.stop = runwayFarEnd({ ...runway, heading: info.heading });
-      }
-    }
-    const stop = info.stop;
-    // Decelerate along the landing direction toward the stop point.
-    const speed = def.speed * 0.55;
-    const toStop = Math.hypot(stop.x - t.x, stop.y - t.y);
-    const step = speed * dt;
-
-    if (toStop <= step || toStop < 2) {
-      // Touchdown complete: remove the entity and award the landing.
-      const timeInAirspace = game.time - (ac.spawnTime ?? game.time);
-      const wasEmergency = !!(
-        ac.emergency &&
-        (ac.emergency.type === EmergencyType.MAYDAY ||
-          ac.emergency.type === EmergencyType.MEDICAL ||
-          ac.emergency.type === EmergencyType.FUEL)
-      );
-      world.destroyEntity(id);
-      bus.emit("aircraft:landed", {
-        id,
-        kind: ac.kind,
-        passengers: ac.passengers,
-        timeInAirspace,
-        _emergency: wasEmergency ? ac.emergency.type : null,
-      });
-      return;
-    }
-
-    const dir = Math.atan2(stop.y - t.y, stop.x - t.x);
-    t.x += Math.cos(dir) * step;
-    t.y += Math.sin(dir) * step;
-    t.heading = info.heading ?? dir;
+  /**
+   * Touchdown complete: mark the plane landed, remove the entity and emit
+   * 'aircraft:landed' with {kind, passengers, timeInAirspace, _emergency}
+   * exactly as the former rollout did. Called the moment the plane reaches the
+   * threshold (runway) or pad (helipad).
+   */
+  function completeLanding(id, ac) {
+    ac.state = "landed";
+    const timeInAirspace = game.time - (ac.spawnTime ?? game.time);
+    const wasEmergency = !!(
+      ac.emergency &&
+      (ac.emergency.type === EmergencyType.MAYDAY ||
+        ac.emergency.type === EmergencyType.MEDICAL ||
+        ac.emergency.type === EmergencyType.FUEL)
+    );
+    world.destroyEntity(id);
+    bus.emit("aircraft:landed", {
+      id,
+      kind: ac.kind,
+      passengers: ac.passengers,
+      timeInAirspace,
+      _emergency: wasEmergency ? ac.emergency.type : null,
+    });
   }
 }

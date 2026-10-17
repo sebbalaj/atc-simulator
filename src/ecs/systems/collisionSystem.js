@@ -121,6 +121,12 @@ export function createCollisionSystem(game) {
     for (const id of ids) {
       const t = world.getComponent(id, Components.Transform);
       const ac = world.getComponent(id, Components.Aircraft);
+      // Touched-down aircraft are on the ground: exclude 'landing'/'landed' from
+      // mid-air conflict checks. Aircraft.state only becomes 'landing' inside
+      // commitLanding (requires path.locked + ac.clearance + reaching the
+      // cleared route end / threshold), so this cannot be abused to fly through
+      // traffic before a plane is actually cleared/at the threshold.
+      if (ac.state === "landing" || ac.state === "landed") continue;
       const def = getAircraftDef(ac.kind);
       snapshots.push({
         id,
@@ -141,11 +147,14 @@ export function createCollisionSystem(game) {
     );
     game.closestSeparation = closest;
 
-    // Apply/clear the per-plane warning flag (drives the blink + HUD).
+    // Apply/clear the per-plane warning flag (drives the blink + HUD). Gated-out
+    // (landing/landed) planes are never in `warnings`, so their flag is cleared
+    // here too — no stale warning ring lingers on a plane that has touched down.
     for (const id of ids) {
       const render = world.getComponent(id, Components.Render);
       const ac = world.getComponent(id, Components.Aircraft);
-      const warned = warnings.has(id);
+      const grounded = ac && (ac.state === "landing" || ac.state === "landed");
+      const warned = !grounded && warnings.has(id);
       if (render) render.warning = warned;
       if (ac) ac.proximity = warned;
     }

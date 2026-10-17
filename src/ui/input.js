@@ -56,6 +56,20 @@ export function hitTest(px, py, ax, ay, radius) {
 }
 
 /**
+ * Build a DISPLAY-ONLY preview descriptor for an in-progress drawn route. This
+ * is the only channel the render layer reads for the pending line while the
+ * player drags; the authoritative sim (movement/landing/collision) never reads
+ * it, so the plane keeps flying its committed Path until pointerup. Pure helper
+ * (returns a fresh snapshot of the points so later mutation of `points` cannot
+ * retroactively change an already-published preview). Returns null for a route
+ * with fewer than two points (nothing to draw yet).
+ */
+export function setDrawPreview(id, points) {
+  if (!points || points.length < 2) return null;
+  return { id, points: points.map((p) => ({ x: p.x, y: p.y })) };
+}
+
+/**
  * Attach pointer handlers to a canvas for a game instance. Returns a detach
  * function that removes the listeners. Browser-only; call from start().
  */
@@ -115,14 +129,12 @@ export function attachInput(canvas, game) {
     const last = drawing.points[drawing.points.length - 1];
     if (Math.hypot(pt.x - last.x, pt.y - last.y) >= MIN_POINT_DISTANCE) {
       drawing.points.push(pt);
-      // Live preview: write the raw points so the render system shows the path.
-      const path = world.getComponent(drawing.id, Components.Path);
-      if (path) {
-        path.points = drawing.points.slice();
-        path.built = null;
-        path.progress = 0;
-        path.locked = false;
-      }
+      // DISPLAY-ONLY live preview. Crucially we do NOT mutate the committed Path
+      // here: the plane must keep flying its current route while the player
+      // draws. The in-progress route lives only in `drawing` and is mirrored to
+      // a display-only channel the render layer reads (same convention as the
+      // radar-sweep fields). The authoritative sim never reads this.
+      game.drawPreview = setDrawPreview(drawing.id, drawing.points);
     }
     ev.preventDefault();
   }
@@ -132,6 +144,9 @@ export function attachInput(canvas, game) {
     const id = drawing.id;
     const points = drawing.points;
     drawing = null;
+    // Drawing is done: clear the display-only preview. The route is now
+    // committed onto the Path via finalizePath below.
+    game.drawPreview = null;
     try {
       canvas.releasePointerCapture(ev.pointerId);
     } catch (_) {
