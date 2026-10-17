@@ -56,6 +56,77 @@ export function isMaydayPriority(emergency) {
 }
 
 /**
+ * Pick the nearest runway that is long enough to accept the given aircraft
+ * class, measured from the aircraft's current position to each runway center.
+ * A mayday gets an IMMEDIATE straight-line priority clearance to this runway
+ * (see straightLineApproach below). Returns the runway object or null when no
+ * runway on the map is adequate. Pure function (no DOM, no mutation).
+ *
+ * @param {Array} runways map.runways
+ * @param {{x:number,y:number}} pos aircraft position
+ * @param {object} aircraftDef class def (needs runwayLengthRequired)
+ */
+export function nearestAdequateRunway(runways, pos, aircraftDef) {
+  if (!runways || runways.length === 0) return null;
+  const need = aircraftDef ? aircraftDef.runwayLengthRequired ?? 0 : 0;
+  let best = null;
+  let bestDist = Infinity;
+  for (const r of runways) {
+    if (r.length < need) continue;
+    const d = Math.hypot(pos.x - r.x, pos.y - r.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = r;
+    }
+  }
+  return best;
+}
+
+/**
+ * Build a straight-line priority approach for a mayday: a two-point route from
+ * the aircraft's current position to the chosen runway's threshold, with the
+ * landing direction and far-end chosen to be the runway end that lets the plane
+ * continue roughly forward (least heading change). Returns
+ *   { points:[start, threshold], clearance:{surface, runwayId, heading, threshold, stop} }
+ * so the landing system can commit it exactly like a hand-drawn clearance.
+ * Pure function; `geom` injects the runway-geometry helpers so this module stays
+ * free of an airport.js import cycle.
+ *
+ * @param {{x:number,y:number}} pos aircraft position
+ * @param {object} runway chosen runway
+ * @param {object} geom { threshold(r), farEnd(r), normalizeAngle(a) }
+ */
+export function straightLineApproach(pos, runway, geom) {
+  // Consider both landing directions; pick the one whose threshold is closest to
+  // the aircraft so the straight-in is as short (and forward) as possible.
+  const dirs = [runway.heading, geom.normalizeAngle(runway.heading + Math.PI)];
+  let best = null;
+  for (const heading of dirs) {
+    const dirRunway = { ...runway, heading };
+    const thr = geom.threshold(dirRunway);
+    const far = geom.farEnd(dirRunway);
+    const d = Math.hypot(pos.x - thr.x, pos.y - thr.y);
+    if (!best || d < best.d) {
+      best = { heading, thr, far, d };
+    }
+  }
+  return {
+    points: [
+      { x: pos.x, y: pos.y },
+      { x: best.thr.x, y: best.thr.y },
+    ],
+    clearance: {
+      surface: "runway",
+      runwayId: runway.id,
+      heading: best.heading,
+      threshold: { x: best.thr.x, y: best.thr.y },
+      stop: { x: best.far.x, y: best.far.y },
+      priority: true,
+    },
+  };
+}
+
+/**
  * Stamp a mayday/engine-failure emergency onto an Aircraft component. Marks it
  * priority and records the descent rate so the HUD can show a diving target.
  * Mutates and returns the aircraft. Pure (no DOM).
@@ -68,8 +139,10 @@ export function markMayday(ac) {
     descending: true,
     descentRate: 1, // relative: used by the HUD label only
   };
-  // Drive the shared speedFactor the movement system already reads.
-  ac.speedFactor = MAYDAY_SPEED_FACTOR;
+  // Keep the stamped factor on the emergency object only. The movement system
+  // derives the effective speed from the emergency via maydaySpeedFactor(), so
+  // there is a single source of truth (no separately-stamped ac.speedFactor to
+  // drift or double-apply). ac.speedFactor stays at its base (1) for maydays.
   return ac.emergency;
 }
 

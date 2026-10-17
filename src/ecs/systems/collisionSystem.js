@@ -42,6 +42,9 @@ export function detectConflicts(snapshots, spatial, wakeMultiplier = 1) {
 
   const byId = new Map(snapshots.map((s) => [s.id, s]));
   const warnings = new Set();
+  // Ordered "a:b" keys (a<b) of the pairs currently in a proximity breach, so
+  // the caller can count one near-miss episode per pair rather than per plane.
+  const warnedPairs = new Set();
   const crashes = [];
   const seen = new Set();
   let closest = Infinity;
@@ -73,14 +76,16 @@ export function detectConflicts(snapshots, spatial, wakeMultiplier = 1) {
         crashes.push({ a: s.id, b: otherId, distance: dist });
         warnings.add(s.id);
         warnings.add(otherId);
+        warnedPairs.add(pairKey);
       } else if (dist < sep) {
         warnings.add(s.id);
         warnings.add(otherId);
+        warnedPairs.add(pairKey);
       }
     }
   }
 
-  return { warnings, crashes, closest: closest === Infinity ? null : closest };
+  return { warnings, warnedPairs, crashes, closest: closest === Infinity ? null : closest };
 }
 
 /** Largest wake separation present in the set (adds to the query radius). */
@@ -103,10 +108,12 @@ function wakePad(snapshots) {
 export function createCollisionSystem(game) {
   const { world, bus, spatial } = game;
 
-  // Track which plane is currently in a proximity breach so each distinct
-  // near-miss episode (a plane entering the warning state) emits exactly one
-  // 'aircraft:nearmiss' event instead of one per tick.
-  const warnedLast = new Set();
+  // Track which *pairs* are currently in a proximity breach so each distinct
+  // near-miss episode emits exactly one 'aircraft:nearmiss' event. Keying on the
+  // pair (not the plane) means a single two-plane breach costs one penalty, not
+  // one per plane — it also still suppresses per-tick spam while the pair stays
+  // in breach, firing again only after they separate and re-converge.
+  const warnedPairsLast = new Set();
 
   return function collisionSystem() {
     const ids = world.query(Components.Transform, Components.Aircraft, Components.Hitbox);
@@ -127,24 +134,41 @@ export function createCollisionSystem(game) {
 
     const wakeMultiplier =
       (game.map && game.map.rules && game.map.rules.wakeMultiplier) || 1;
-    const { warnings, crashes, closest } = detectConflicts(snapshots, spatial, wakeMultiplier);
+    const { warnings, warnedPairs, crashes, closest } = detectConflicts(
+      snapshots,
+      spatial,
+      wakeMultiplier
+    );
     game.closestSeparation = closest;
 
-    // Apply/clear warning state and emit one near-miss per new breach episode.
+    // Apply/clear the per-plane warning flag (drives the blink + HUD).
     for (const id of ids) {
       const render = world.getComponent(id, Components.Render);
       const ac = world.getComponent(id, Components.Aircraft);
       const warned = warnings.has(id);
       if (render) render.warning = warned;
       if (ac) ac.proximity = warned;
-      if (warned && !warnedLast.has(id)) {
-        // New entrant into a proximity breach: a near-miss.
-        bus.emit("aircraft:nearmiss", { id, kind: ac && ac.kind });
-      }
     }
-    // Refresh the "warned last tick" set for next-tick edge detection.
-    warnedLast.clear();
-    for (const id of warnings) warnedLast.add(id);
+
+    // Emit exactly ONE 'aircraft:nearmiss' per newly-breaching PAIR. A single
+    // two-plane breach is one episode (one reputation penalty), not two — and an
+    // ongoing breach does not re-fire until the pair separates and re-converges.
+    for (const pairKey of warnedPairs) {
+      if (warnedPairsLast.has(pairKey)) continue;
+      const [aStr, bStr] = pairKey.split(":");
+      const a = Number(aStr);
+      const b = Number(bStr);
+      const acA = world.getComponent(a, Components.Aircraft);
+      const acB = world.getComponent(b, Components.Aircraft);
+      bus.emit("aircraft:nearmiss", {
+        a,
+        b,
+        kinds: [acA && acA.kind, acB && acB.kind],
+      });
+    }
+    // Refresh the "warned last tick" pair set for next-tick edge detection.
+    warnedPairsLast.clear();
+    for (const pairKey of warnedPairs) warnedPairsLast.add(pairKey);
 
     if (crashes.length > 0 && !game.gameOver) {
       game.gameOver = true;

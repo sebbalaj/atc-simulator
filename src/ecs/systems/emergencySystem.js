@@ -11,13 +11,22 @@
 //     console's existing fuelout penalty plus a stormloss penalty added here).
 
 import { Components } from "../components.js";
-import { AircraftKind } from "../../game/aircraft.js";
-import { isOverHospital } from "../../game/airport.js";
+import { AircraftKind, getAircraftDef } from "../../game/aircraft.js";
+import {
+  isOverHospital,
+  runwayThreshold,
+  runwayFarEnd,
+  normalizeAngle,
+} from "../../game/airport.js";
+import { rebuildPath } from "./movementSystem.js";
 import {
   createEmergencyController,
   EmergencyType,
   isFuelEmergency,
+  isMaydayPriority,
   markFuelEmergency,
+  nearestAdequateRunway,
+  straightLineApproach,
 } from "../../game/emergencies.js";
 
 /** Build the ECS emergency system bound to a game instance. */
@@ -39,6 +48,9 @@ export function createEmergencySystem(game) {
         if (em.type === EmergencyType.MAYDAY) {
           game.flashBanner && game.flashBanner("MAYDAY - ENGINE FAILURE, PRIORITY");
           bus.emit("emergency:mayday", { id, kind: ac.kind });
+          // Immediate straight-line priority clearance to the nearest adequate
+          // runway, and divert all other inbound traffic out of the way.
+          assignMaydayPriority(id);
         } else if (em.type === EmergencyType.MEDICAL) {
           game.flashBanner && game.flashBanner("MEDEVAC - ROUTE VIA HOSPITAL");
           bus.emit("emergency:medical", { id, kind: ac.kind });
@@ -68,6 +80,62 @@ export function createEmergencySystem(game) {
       checkFired();
     })
   );
+
+  /**
+   * Give a mayday aircraft an immediate straight-line priority clearance to the
+   * nearest adequate runway and divert every OTHER inbound plane: any other
+   * plane currently cleared/locked toward a surface has its clearance released
+   * so it reverts to holding and must be re-routed, keeping the approach free
+   * for the emergency. Returns the clearance applied (or null if none possible).
+   */
+  function assignMaydayPriority(maydayId) {
+    const ac = world.getComponent(maydayId, Components.Aircraft);
+    const t = world.getComponent(maydayId, Components.Transform);
+    const path = world.getComponent(maydayId, Components.Path);
+    if (!ac || !t || !path || !isMaydayPriority(ac.emergency)) return null;
+    if (!game.map || !game.map.runways) return null;
+
+    const def = getAircraftDef(ac.kind);
+    const runway = nearestAdequateRunway(game.map.runways, { x: t.x, y: t.y }, def);
+    if (!runway) return null; // no adequate runway; player must handle manually
+
+    const approach = straightLineApproach({ x: t.x, y: t.y }, runway, {
+      threshold: runwayThreshold,
+      farEnd: runwayFarEnd,
+      normalizeAngle,
+    });
+
+    // Stamp the straight-in route + clearance exactly as a hand-drawn clearance
+    // would, so the landing system commits it with no player action required.
+    path.points = approach.points;
+    path.holding = false;
+    path.completed = false;
+    path.progress = 0;
+    path.built = null;
+    path._dirty = true;
+    path.locked = true;
+    ac.clearance = approach.clearance;
+    rebuildPath(path, def);
+
+    // Divert all other inbound traffic: release their clearances so they hold.
+    const others = world.query(Components.Transform, Components.Aircraft, Components.Path);
+    for (const otherId of others) {
+      if (otherId === maydayId) continue;
+      const oac = world.getComponent(otherId, Components.Aircraft);
+      const opath = world.getComponent(otherId, Components.Path);
+      if (!oac || !opath) continue;
+      if (oac.state === "landing") continue; // already committed to the runway
+      if (opath.locked || oac.clearance) {
+        opath.locked = false;
+        opath.completed = false;
+        oac.clearance = null;
+      }
+    }
+
+    bus.emit("emergency:priority-cleared", { id: maydayId, runwayId: runway.id });
+    game.flashBanner && game.flashBanner("PRIORITY: ALL TRAFFIC DIVERTED");
+    return approach.clearance;
+  }
 
   function checkFired() {
     if (game.reputation && game.reputation.isFired() && !game.gameOver) {
@@ -112,6 +180,8 @@ export function createEmergencySystem(game) {
   };
 
   system.controller = controller;
+  // Exposed for headless tests and manual triggering of a priority clearance.
+  system.assignMaydayPriority = assignMaydayPriority;
   system.detach = () => {
     for (const u of unsub) u();
     unsub.length = 0;

@@ -22,7 +22,9 @@ import {
   runwayFarEnd,
   holdingPatternPoints,
   isOverHospital,
+  routePassesHospital,
 } from "../game/airport.js";
+import { EmergencyType } from "../game/emergencies.js";
 
 /** Minimum world-space distance between appended control points (px). */
 const MIN_POINT_DISTANCE = 12;
@@ -183,6 +185,21 @@ export function finalizePath(game, id, points) {
   const end = points[points.length - 1];
   const prev = points[points.length - 2];
   const approachHeading = Math.atan2(end.y - prev.y, end.x - prev.x);
+
+  // Medical-evac: if the DRAWN route passes over the hospital POI, satisfy the
+  // overflight gate immediately (routePassesHospital over the polyline) rather
+  // than waiting for the live position tick. The live-position tracking in the
+  // emergency system remains as a fallback for routes sampled between points.
+  if (
+    ac.emergency &&
+    ac.emergency.type === EmergencyType.MEDICAL &&
+    !ac.emergency.hospitalVisited &&
+    map.hospital &&
+    routePassesHospital(map.hospital, points)
+  ) {
+    ac.emergency.hospitalVisited = true;
+    if (game.bus) game.bus.emit("emergency:hospitalreached", { id, kind: ac.kind });
+  }
 
   const snapped = snapToLanding(map, points, approachHeading, def);
 

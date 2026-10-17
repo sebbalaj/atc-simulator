@@ -9,7 +9,8 @@ import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import { buildPath, clampTurns, sampleAlong } from "../../game/pathUtils.js";
 import { drainFuel } from "../../game/fuel.js";
-import { updateMovingRunways } from "../../game/maps.js";
+import { updateMovingRunways, holdingPatternPoints } from "../../game/maps.js";
+import { maydaySpeedFactor } from "../../game/emergencies.js";
 
 // A plane without a cleared route for this many seconds counts as "held too
 // long" and costs reputation once (per hold episode).
@@ -33,6 +34,35 @@ export function rebuildPath(path, aircraftDef) {
 export function createMovementSystem(game) {
   const { world, bus } = game;
 
+  /** Whether the Automated Holding Patterns upgrade is owned (reads the flag). */
+  function holdingAutomationEnabled() {
+    return !!(
+      game.upgradeState &&
+      game.upgradeState.flags &&
+      game.upgradeState.flags.holdingAutomation
+    );
+  }
+
+  /**
+   * Nearest hold fix to a transform. Supports a single map.holdFix (the common
+   * case) or a map.holdFixes[] list; returns null when the map defines none.
+   */
+  function nearestHoldFix(t) {
+    const map = game.map;
+    if (!map) return null;
+    const fixes = map.holdFixes && map.holdFixes.length ? map.holdFixes : map.holdFix ? [map.holdFix] : [];
+    let best = null;
+    let bestDist = Infinity;
+    for (const f of fixes) {
+      const d = Math.hypot(t.x - f.x, t.y - f.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = f;
+      }
+    }
+    return best;
+  }
+
   return function movementSystem(dt) {
     // Advance any moving runways (Map 3 carrier) so the landing system and the
     // approach cone track the live deck position this tick.
@@ -48,7 +78,10 @@ export function createMovementSystem(game) {
       // path-follower must not fight it by snapping the plane back to the path.
       if (ac.state === "landing") continue;
 
-      const speed = def.speed * (ac.speedFactor ?? 1);
+      // Effective speed: base class speed scaled by any stamped speedFactor, and
+      // further bumped for a MAYDAY (engine-failure dive) via the pure helper so
+      // the emergency state — not just a one-time stamped field — drives it.
+      const speed = maydaySpeedFactor(ac.emergency, def.speed * (ac.speedFactor ?? 1));
 
       // A plane that has not been cleared toward a runway/helipad is effectively
       // being held in the airspace: no locked route means "holding". Holding
@@ -74,6 +107,26 @@ export function createMovementSystem(game) {
             // Reached the end of the drawn route.
             path.completed = true;
             completed = true;
+            // Automated Holding Patterns upgrade: instead of letting an
+            // un-cleared plane fly straight off the end of its route (and drift
+            // out of the airspace / burn out), auto-convert the finished route
+            // into a holding orbit at the nearest hold fix so it loops safely
+            // until the controller re-routes it. Only when the upgrade is owned.
+            if (!ac.clearance && !path.holding && holdingAutomationEnabled()) {
+              const fix = nearestHoldFix(t);
+              if (fix) {
+                const orbit = holdingPatternPoints(fix);
+                path.points = orbit;
+                path.holding = true;
+                path.completed = false;
+                path.built = null;
+                path._dirty = true;
+                path.progress = 0;
+                completed = false;
+                rebuildPath(path, def);
+                if (bus) bus.emit("holding:auto", { id, kind: ac.kind, fix: fix.id });
+              }
+            }
           }
         }
       } else {

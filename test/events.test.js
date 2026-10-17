@@ -159,7 +159,10 @@ test("mayday flag increases effective speed and marks priority", () => {
   assert.ok(isMaydayPriority(ac.emergency), "mayday is priority");
   assert.equal(maydaySpeedFactor(ac.emergency), MAYDAY_SPEED_FACTOR, "effective speed bumped");
   assert.ok(MAYDAY_SPEED_FACTOR > 1, "mayday flies faster");
-  assert.equal(ac.speedFactor, MAYDAY_SPEED_FACTOR, "shared speedFactor set for movement");
+  // The movement system derives the effective speed from the emergency via
+  // maydaySpeedFactor(def.speed * speedFactor); markMayday no longer stamps a
+  // separate ac.speedFactor (single source of truth, no double application).
+  assert.equal(maydaySpeedFactor(ac.emergency, 100), 100 * MAYDAY_SPEED_FACTOR, "scales a base speed");
 });
 
 // --- Medical evac ---------------------------------------------------------

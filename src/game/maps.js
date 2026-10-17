@@ -40,10 +40,19 @@ const DEG = Math.PI / 180;
  * position is captured so the offset is relative to it.
  */
 function makeMovingRunway(runway, { axis = 0, amplitude = 60, speed = 18 } = {}) {
+  // Derive an explicit angular frequency (rad/s) from a peak deck speed so the
+  // oscillation PERIOD is independent of the amplitude (and thus of map width).
+  // For x(t) = amplitude * sin(omega * t), peak speed = amplitude * omega, so
+  // omega = speed / amplitude gives a carrier whose fastest pass is `speed`
+  // px/s regardless of how far it travels. Storing omega (not re-dividing by a
+  // length each tick) keeps the frequency a first-class, dimensionally-sound
+  // quantity instead of an accidental speed/amplitude coupling.
+  const omega = speed / Math.max(1, amplitude);
   runway.moving = {
     axis,
     amplitude,
     speed,
+    omega, // angular frequency (rad/s)
     baseX: runway.x,
     baseY: runway.y,
     phase: 0, // seconds accumulated; movement system advances this
@@ -295,11 +304,36 @@ export function updateMovingRunways(map, dt) {
     const m = runway.moving;
     if (!m) continue;
     m.phase += dt;
-    // Oscillate with a sine so the carrier eases at the turnaround points.
-    const offset = Math.sin((m.phase * m.speed) / Math.max(1, m.amplitude)) * m.amplitude;
+    // Oscillate with a sine (eases at the turnaround points) using an explicit
+    // angular frequency. omega is captured at construction (speed/amplitude) so
+    // the period does NOT drift with the amplitude; fall back to deriving it for
+    // any runway whose descriptor predates the omega field.
+    const omega = m.omega != null ? m.omega : m.speed / Math.max(1, m.amplitude);
+    const offset = Math.sin(omega * m.phase) * m.amplitude;
     runway.x = m.baseX + Math.cos(m.axis) * offset;
     runway.y = m.baseY + Math.sin(m.axis) * offset;
   }
+}
+
+/**
+ * Construct a standalone runway with a `moving` oscillation descriptor, for unit
+ * testing the carrier motion (amplitude/frequency decoupling) without building a
+ * whole map. Returns the runway object. Pure.
+ */
+export function makeMovingRunwayForTest(opts = {}) {
+  const runway = {
+    id: opts.id || "TEST",
+    x: opts.x ?? 0,
+    y: opts.y ?? 0,
+    heading: opts.heading ?? 0,
+    length: opts.length ?? 170,
+    width: opts.width ?? 16,
+  };
+  return makeMovingRunway(runway, {
+    axis: opts.axis ?? 0,
+    amplitude: opts.amplitude ?? 60,
+    speed: opts.speed ?? 16,
+  });
 }
 
 // Re-export geometry helpers so callers can import map + helpers from one place.
