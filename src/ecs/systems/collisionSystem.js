@@ -29,15 +29,16 @@ import { getAircraftDef, requiredSeparation, AircraftKind } from "../../game/air
  * @param {Array} snapshots
  * @param {object} spatial spatial hash (createSpatialHash)
  */
-export function detectConflicts(snapshots, spatial) {
+export function detectConflicts(snapshots, spatial, wakeMultiplier = 1) {
   spatial.clear();
   let maxSep = 0;
   for (const s of snapshots) {
     spatial.insert(s.id, s.x, s.y);
     if (s.separationRadius > maxSep) maxSep = s.separationRadius;
   }
-  // Query radius must cover the largest possible required separation (wake).
-  const queryRadius = maxSep + wakePad(snapshots);
+  // Query radius must cover the largest possible required separation (wake),
+  // scaled by the map's wake strictness (Map 4 Mega Hub is stricter).
+  const queryRadius = maxSep + wakePad(snapshots) * wakeMultiplier;
 
   const byId = new Map(snapshots.map((s) => [s.id, s]));
   const warnings = new Set();
@@ -60,11 +61,12 @@ export function detectConflicts(snapshots, spatial) {
       if (dist < closest) closest = dist;
 
       // Required separation, wake-aware from either plane acting as leader.
+      // The map's wake multiplier scales the wake bubble (Map 4 is stricter).
       const defA = getAircraftDef(s.kind);
       const defB = getAircraftDef(o.kind);
       const sep = Math.max(
-        requiredSeparation(defA, defB),
-        requiredSeparation(defB, defA)
+        requiredSeparation(defA, defB, wakeMultiplier),
+        requiredSeparation(defB, defA, wakeMultiplier)
       );
 
       if (dist < s.hitboxRadius + o.hitboxRadius) {
@@ -123,7 +125,9 @@ export function createCollisionSystem(game) {
       });
     }
 
-    const { warnings, crashes, closest } = detectConflicts(snapshots, spatial);
+    const wakeMultiplier =
+      (game.map && game.map.rules && game.map.rules.wakeMultiplier) || 1;
+    const { warnings, crashes, closest } = detectConflicts(snapshots, spatial, wakeMultiplier);
     game.closestSeparation = closest;
 
     // Apply/clear warning state and emit one near-miss per new breach episode.

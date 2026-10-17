@@ -21,7 +21,8 @@ import {
 
 /** Build the ECS weather system bound to a game instance. */
 export function createWeatherSystem(game) {
-  const { world, bus, rng, map } = game;
+  const { world, bus, rng } = game;
+  const map = game.map;
 
   const controller = createWeatherController({ rng, map, config: game.weatherConfig });
 

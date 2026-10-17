@@ -131,12 +131,14 @@ export function getAircraftDef(kind) {
  * is used. Pure function (testable).
  * @param {object} leaderDef definition of the plane in front
  * @param {object} followerDef definition of the trailing plane
+ * @param {number} [wakeMultiplier] scales the wake bubble (map-specific; Map 4
+ *   Mega Hub enforces stricter wake separation behind COMMERCIAL leaders).
  * @returns {number} required center-to-center separation (px)
  */
-export function requiredSeparation(leaderDef, followerDef) {
+export function requiredSeparation(leaderDef, followerDef, wakeMultiplier = 1) {
   const base = Math.max(leaderDef.separationRadius, followerDef.separationRadius);
   if (leaderDef.wakeSeparation > 0) {
-    return Math.max(base, leaderDef.wakeSeparation);
+    return Math.max(base, leaderDef.wakeSeparation * wakeMultiplier);
   }
   return base;
 }

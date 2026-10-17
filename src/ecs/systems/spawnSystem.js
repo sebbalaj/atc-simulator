@@ -38,7 +38,7 @@ export function spawnInterval(shiftTime) {
 
 /** Build the ECS spawn system bound to a game instance. */
 export function createSpawnSystem(game) {
-  const { world, bus, rng, map } = game;
+  const { world, bus, rng } = game;
 
   let timer = 0;
   let serial = 0;
@@ -51,6 +51,7 @@ export function createSpawnSystem(game) {
   }
 
   function spawnOne() {
+    const map = game.map;
     const kind = rng.pick(ALL_KINDS);
     const def = getAircraftDef(kind);
 
@@ -98,7 +99,9 @@ export function createSpawnSystem(game) {
   const system = function spawnSystem(dt) {
     if (game.gameOver) return;
     timer += dt;
-    const interval = spawnInterval(game.time);
+    // Map-specific spawn scaling (Map 4 Mega Hub is busier => shorter interval).
+    const scale = (game.map && game.map.rules && game.map.rules.spawnScale) || 1;
+    const interval = spawnInterval(game.time) * scale;
     if (timer >= interval) {
       timer -= interval;
       spawnOne();

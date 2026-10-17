@@ -9,6 +9,7 @@ import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import { buildPath, clampTurns, sampleAlong } from "../../game/pathUtils.js";
 import { drainFuel } from "../../game/fuel.js";
+import { updateMovingRunways } from "../../game/maps.js";
 
 // A plane without a cleared route for this many seconds counts as "held too
 // long" and costs reputation once (per hold episode).
@@ -33,6 +34,9 @@ export function createMovementSystem(game) {
   const { world, bus } = game;
 
   return function movementSystem(dt) {
+    // Advance any moving runways (Map 3 carrier) so the landing system and the
+    // approach cone track the live deck position this tick.
+    updateMovingRunways(game.map, dt);
     const ids = world.query(Components.Transform, Components.Aircraft);
     for (const id of ids) {
       const t = world.getComponent(id, Components.Transform);

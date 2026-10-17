@@ -95,6 +95,12 @@ export function createWorld() {
     return entities.size;
   }
 
+  /** Remove every entity and component (used when loading a new map/shift). */
+  function clear() {
+    entities.clear();
+    for (const store of components.values()) store.clear();
+  }
+
   return {
     createEntity,
     destroyEntity,
@@ -105,5 +111,6 @@ export function createWorld() {
     removeComponent,
     query,
     entityCount,
+    clear,
   };
 }

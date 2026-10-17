@@ -20,7 +20,7 @@ import { isMedicalLandingAllowed, EmergencyType } from "../../game/emergencies.j
 
 /** Build the ECS landing system bound to a game instance. */
 export function createLandingSystem(game) {
-  const { world, bus, map } = game;
+  const { world, bus } = game;
 
   function endpointAndHeading(path, t) {
     // Prefer the built polyline's tail for an accurate endpoint + direction.
@@ -45,7 +45,7 @@ export function createLandingSystem(game) {
   }
 
   function runwayById(rid) {
-    return map.runways.find((r) => r.id === rid);
+    return game.map.runways.find((r) => r.id === rid);
   }
 
   /**
@@ -66,6 +66,7 @@ export function createLandingSystem(game) {
 
   return function landingSystem(dt) {
     if (game.gameOver) return;
+    const map = game.map;
     const ids = world.query(Components.Transform, Components.Aircraft, Components.Path);
 
     for (const id of ids) {
@@ -132,7 +133,13 @@ export function createLandingSystem(game) {
         if (!isRunwayClear(runway, game.time)) return; // hold: runway busy
         occupyRunway(runway, game.time);
       }
-      ac.landing = { surface: "runway", heading: c.heading, stop: c.stop };
+      ac.landing = {
+        surface: "runway",
+        heading: c.heading,
+        stop: c.stop,
+        // Moving-runway (carrier) landings track the live far-end each tick.
+        runwayId: runway && runway.moving ? c.runwayId : null,
+      };
     } else {
       ac.landing = { surface: "helipad", heading: t.heading, stop: c.stop };
     }
@@ -141,6 +148,14 @@ export function createLandingSystem(game) {
 
   function advanceLanding(id, t, ac, def, dt) {
     const info = ac.landing;
+    // For a moving runway (carrier) refresh the stop point to the live far-end
+    // so the rollout tracks the deck as it translates under the aircraft.
+    if (info.runwayId) {
+      const runway = runwayById(info.runwayId);
+      if (runway) {
+        info.stop = runwayFarEnd({ ...runway, heading: info.heading });
+      }
+    }
     const stop = info.stop;
     // Decelerate along the landing direction toward the stop point.
     const speed = def.speed * 0.55;

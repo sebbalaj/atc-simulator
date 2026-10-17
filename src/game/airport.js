@@ -202,10 +202,15 @@ export function createMap1(width, height) {
     center: { x: cx, y: cy },
     runways: [runwayA, runwayB],
     helipad,
+    // FEAT-005: all pads as a list (helipad stays the primary for back-compat).
+    helipads: [helipad],
+    airports: [{ id: "RGL", name: "Regional", x: cx, y: cy, size: "medium" }],
     hospital,
     holdFix,
     // Aircraft enter from this perimeter radius around the center.
     spawnRadius: Math.min(width, height) * 0.52,
+    // FEAT-005: map-specific rules (wake strictness, spawn scaling, hint).
+    rules: { wakeMultiplier: 1, spawnScale: 1, routingHint: "Two intersecting runways." },
   };
 }
 

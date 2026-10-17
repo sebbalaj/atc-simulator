@@ -22,7 +22,7 @@ import {
 
 /** Build the ECS emergency system bound to a game instance. */
 export function createEmergencySystem(game) {
-  const { world, bus, rng, map } = game;
+  const { world, bus, rng } = game;
 
   const controller = createEmergencyController({ rng, config: game.emergencyConfig });
 
@@ -86,8 +86,10 @@ export function createEmergencySystem(game) {
 
       // Medical evac: track hospital overflight.
       if (ac.emergency && ac.emergency.type === EmergencyType.MEDICAL) {
-        if (!ac.emergency.hospitalVisited && map.hospital && isOverHospital(map.hospital, t.x, t.y)) {
+        const hospital = game.map && game.map.hospital;
+        if (!ac.emergency.hospitalVisited && hospital && isOverHospital(hospital, t.x, t.y)) {
           ac.emergency.hospitalVisited = true;
+          void hospital;
           bus.emit("emergency:hospitalreached", { id, kind: ac.kind });
           game.flashBanner && game.flashBanner("HOSPITAL REACHED - CLEARED TO LAND");
         }

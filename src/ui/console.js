@@ -47,16 +47,24 @@ export function createConsole(game, dom = {}) {
     if (strips) strips.add(id);
   });
 
+  // Record into the shift progression (for the end-of-shift summary) if present.
+  const prog = () => game.progression;
+
   on("aircraft:landed", (payload) => {
     const revenue = computeLandingRevenue(payload);
     bank.credit(revenue);
     reputation.recover();
+    if (prog()) {
+      prog().recordLanding(revenue);
+      if (payload && payload._emergency) prog().recordEmergency();
+    }
     if (strips) strips.remove(payload.id);
     render();
   });
 
   on("aircraft:crashed", (payload) => {
     reputation.penalize("crash");
+    if (prog()) prog().recordIncident("crash");
     if (strips) {
       if (payload && payload.a != null) strips.remove(payload.a);
       if (payload && payload.b != null) strips.remove(payload.b);
@@ -66,19 +74,27 @@ export function createConsole(game, dom = {}) {
 
   on("aircraft:fuelout", (payload) => {
     reputation.penalize("fuelOut");
+    if (prog()) prog().recordIncident("fuelOut");
     if (strips && payload) strips.remove(payload.id);
     checkFired();
     render();
   });
 
+  on("aircraft:stormloss", () => {
+    if (prog()) prog().recordIncident("stormLoss");
+    render();
+  });
+
   on("aircraft:nearmiss", () => {
     reputation.penalize("nearMiss");
+    if (prog()) prog().recordIncident("nearMiss");
     checkFired();
     render();
   });
 
   on("aircraft:excessivehold", () => {
     reputation.penalize("excessiveHold");
+    if (prog()) prog().recordIncident("excessiveHold");
     checkFired();
     render();
   });
@@ -116,13 +132,27 @@ export function createConsole(game, dom = {}) {
   // Initial paint.
   render();
 
+  /**
+   * Reset the per-shift state for a new shift: reputation back to full and the
+   * shift clock to zero. The bank balance PERSISTS across shifts (earned money
+   * carries over to the upgrade shop). Flight strips are cleared.
+   */
+  function resetForShift() {
+    const fresh = createReputation();
+    reputation.score = fresh.score;
+    reputation.incidents = fresh.incidents;
+    clock.setElapsed(0);
+    if (strips) strips.clear();
+    render();
+  }
+
   function detach() {
     for (const un of unsubscribers) un();
     unsubscribers.length = 0;
     if (strips) strips.clear();
   }
 
-  return { bank, reputation, clock, strips, update, render, detach, root };
+  return { bank, reputation, clock, strips, update, render, detach, resetForShift, root };
 }
 
 /** Format a whole-dollar balance like "$1,250". Pure helper. */

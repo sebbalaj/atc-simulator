@@ -11,7 +11,7 @@ import { createWorld } from "./ecs/world.js";
 import { createEventBus } from "./core/events.js";
 import { createSpatialHash } from "./core/spatialHash.js";
 import { createRng } from "./core/rng.js";
-import { createMap1 } from "./game/airport.js";
+import { createMap } from "./game/maps.js";
 import { createSpawnSystem } from "./ecs/systems/spawnSystem.js";
 import { createWeatherSystem } from "./ecs/systems/weatherSystem.js";
 import { createEmergencySystem } from "./ecs/systems/emergencySystem.js";
@@ -21,6 +21,8 @@ import { createCollisionSystem } from "./ecs/systems/collisionSystem.js";
 import { createRenderSystem } from "./ecs/systems/renderSystem.js";
 import { attachInput } from "./ui/input.js";
 import { createConsole } from "./ui/console.js";
+import { createProgression } from "./game/progression.js";
+import { createScreens } from "./ui/screens.js";
 
 // Fixed simulation step: 60 updates per second.
 const FIXED_DT = 1 / 60;
@@ -50,13 +52,15 @@ export function createGame(options = {}) {
     bus,
     spatial,
     rng,
-    map: createMap1(width, height),
+    map: createMap(options.mapId ?? "map1", width, height),
+    mapId: options.mapId ?? "map1",
     canvas: null,
     ctx: null,
     dpr: 1,
     width,
     height,
     running: false,
+    paused: false, // true while a screen overlay (menu/summary/shop) is shown
     time: 0, // accumulated simulation time (seconds)
     sweep: 0, // radar sweep angle (radians)
     selectedId: null,
@@ -74,6 +78,13 @@ export function createGame(options = {}) {
     // then fog always reduces visibility. Fog/landing code reads it defensively.
     ilsOwned: false,
     console: null,
+    screens: null,
+    // Progression: shift manager (per-shift counters, map unlock gating). The
+    // upgrade shop reads/writes the active map + game flags via this.
+    progression: createProgression(options.progression ?? {}),
+    // Upgrade state the shop mutates: the live map plus game flags. flags.ilsOwned
+    // mirrors game.ilsOwned (kept in sync on purchase).
+    upgradeState: null,
     stats: { landed: 0, crashed: 0 },
     _accumulator: 0,
     _lastTs: 0,
@@ -81,14 +92,26 @@ export function createGame(options = {}) {
     _detachInput: null,
   };
 
-  // Build systems bound to this game.
-  const spawnSystem = createSpawnSystem(game);
-  const weatherSystem = createWeatherSystem(game);
-  const emergencySystem = createEmergencySystem(game);
-  const movementSystem = createMovementSystem(game);
-  const landingSystem = createLandingSystem(game);
-  const collisionSystem = createCollisionSystem(game);
-  const renderSystem = createRenderSystem(game);
+  // The upgrade shop mutates the active map + flags through this state object.
+  game.upgradeState = { map: game.map, flags: { ilsOwned: game.ilsOwned }, owned: [] };
+
+  // Systems are (re)built per map load so each captures the active map/world.
+  // update()/render() call through game.systems so a reload swaps them cleanly.
+  game.systems = {};
+  function buildSystems() {
+    game.systems.spawn = createSpawnSystem(game);
+    game.systems.weather = createWeatherSystem(game);
+    game.systems.emergency = createEmergencySystem(game);
+    game.systems.movement = createMovementSystem(game);
+    game.systems.landing = createLandingSystem(game);
+    game.systems.collision = createCollisionSystem(game);
+    game.systems.render = createRenderSystem(game);
+    // Back-compat aliases exposed for seeding/testing.
+    game.spawnSystem = game.systems.spawn;
+    game.weatherSystem = game.systems.weather;
+    game.emergencySystem = game.systems.emergency;
+  }
+  buildSystems();
 
   /** Flash a transient banner message at the top of the scope. */
   function flashBanner(text, seconds = 2.5) {
@@ -125,12 +148,28 @@ export function createGame(options = {}) {
       else game.banner.alpha = Math.min(1, remaining / 0.8);
     }
     if (game.gameOver) return;
-    spawnSystem(dt);
-    weatherSystem(dt);
-    emergencySystem(dt);
-    movementSystem(dt);
-    landingSystem(dt);
-    collisionSystem(dt);
+    if (game.paused) return;
+
+    // End-of-shift: when the shift clock runs out, hand off to the screen
+    // manager to show the summary (a survived shift) and pause the sim.
+    if (
+      game.clock &&
+      game.clock.isShiftOver &&
+      game.clock.isShiftOver() &&
+      game.progression &&
+      game.progression.state.active &&
+      game.screens
+    ) {
+      game.screens.onShiftClockExpired();
+      return;
+    }
+
+    game.systems.spawn(dt);
+    game.systems.weather(dt);
+    game.systems.emergency(dt);
+    game.systems.movement(dt);
+    game.systems.landing(dt);
+    game.systems.collision(dt);
   }
 
   /** Draw a single frame. */
@@ -141,7 +180,7 @@ export function createGame(options = {}) {
     if (!ctx) return;
     // Blink phase for proximity warnings (~3 Hz).
     const blinkPhase = (game.time * 3) % 1;
-    renderSystem(ctx, w, h, blinkPhase);
+    game.systems.render(ctx, w, h, blinkPhase);
   }
 
   /** The requestAnimationFrame callback: fixed-step accumulator. */
@@ -181,6 +220,12 @@ export function createGame(options = {}) {
       game.console = createConsole(game);
     }
 
+    // Build the screen manager (menu / summary / shop / game-over). It boots
+    // into the main menu and pauses the sim until a map is chosen.
+    if (document.getElementById("screens")) {
+      game.screens = createScreens(game);
+    }
+
     game.running = true;
     game._lastTs = performance.now() / 1000;
     game._rafId = requestAnimationFrame(frame);
@@ -189,7 +234,9 @@ export function createGame(options = {}) {
   /** Stop the loop and detach handlers. */
   function stop() {
     game.running = false;
-    if (emergencySystem && emergencySystem.detach) emergencySystem.detach();
+    if (game.systems.emergency && game.systems.emergency.detach) {
+      game.systems.emergency.detach();
+    }
     if (game._detachInput) {
       game._detachInput();
       game._detachInput = null;
@@ -197,6 +244,10 @@ export function createGame(options = {}) {
     if (game.console) {
       game.console.detach();
       game.console = null;
+    }
+    if (game.screens) {
+      game.screens.detach();
+      game.screens = null;
     }
     if (typeof window !== "undefined") {
       window.removeEventListener("resize", resize);
@@ -219,18 +270,53 @@ export function createGame(options = {}) {
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     // Draw in CSS-pixel coordinates; the transform handles the device scale.
     game.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // Rebuild the map centered on the new radar size.
-    game.map = createMap1(newW, newH);
+    // Rebuild the active map centered on the new radar size, then rebind the
+    // systems + upgrade state to the fresh map object.
+    game.map = createMap(game.mapId, newW, newH);
+    game.upgradeState.map = game.map;
+    buildSystems();
+  }
+
+  /**
+   * Load a map by id: reset the World, the simulation clock, and game-over
+   * state, rebuild the active map at the current radar size, re-point the
+   * upgrade state at it, and rebuild the systems. Used to start each shift on
+   * the selected map (map select / between-shift advance).
+   */
+  function loadMap(mapId) {
+    // Detach the old emergency bus subscriptions before replacing systems.
+    if (game.systems.emergency && game.systems.emergency.detach) {
+      game.systems.emergency.detach();
+    }
+    game.mapId = mapId;
+    game.world.clear();
+    game.time = 0;
+    game.sweep = 0;
+    game.selectedId = null;
+    game.camera = { target: null, followId: null };
+    game.banner = null;
+    game.gameOver = false;
+    game.gameOverReason = null;
+    game.closestSeparation = null;
+    game._accumulator = 0;
+    game.stats = { landed: 0, crashed: 0 };
+    game.map = createMap(mapId, game.width, game.height);
+    game.upgradeState.map = game.map;
+    buildSystems();
+    // Fresh economy/reputation/clock for the new shift if a console exists.
+    if (game.console) game.console.resetForShift();
+    game.progression.startShift();
+    return game.map;
   }
 
   game.start = start;
   game.stop = stop;
   game.resize = resize;
+  game.loadMap = loadMap;
   game.update = update; // exposed for headless/testing
   game.render = render;
-  game.spawnSystem = spawnSystem; // exposed for seeding/testing
-  game.weatherSystem = weatherSystem; // exposed for manual triggering/testing
-  game.emergencySystem = emergencySystem;
+  // System aliases (game.spawnSystem / weatherSystem / emergencySystem) are set
+  // by buildSystems() and refreshed on every loadMap().
   return game;
 }
 
