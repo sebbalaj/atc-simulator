@@ -129,8 +129,22 @@ body {
   -webkit-overflow-scrolling: touch;
 }
 
-/* Individual flight strip: tappable row with callsign, class, altitude and a
-   fuel bar. Left border is tinted with the aircraft class color. */
+/* One-line legend above the strip list: explains the preferred-vs-forced
+   markers so the player can read the assignment tokens on each strip. */
+.strip-legend {
+  flex: 0 0 auto;
+  font-size: clamp(9px, 2.6vw, 11px);
+  color: var(--crt-green-dim);
+  letter-spacing: 0.5px;
+  padding: 1px 2px 3px;
+  border-bottom: 1px dashed rgba(57, 255, 20, 0.25);
+  margin-bottom: 1px;
+}
+
+/* Individual flight strip: tappable row with a class badge, callsign, assigned
+   surface, altitude and a fuel bar. The LEFT BORDER + background now encode the
+   resolved color STATE (see strip-state-* below); the aircraft class lives in a
+   small badge instead of the old class-colored border. */
 .flight-strip {
   border: 1px solid var(--crt-green-dim);
   border-left: 4px solid var(--crt-green);
@@ -141,24 +155,50 @@ body {
   flex: 0 0 auto;
 }
 
+/* --- Resolved color states (exactly one applies per strip) --------------- */
+
+/* green: default — unrouted, high fuel. */
+.flight-strip.strip-state-green {
+  border-left-color: var(--crt-green);
+  background: rgba(57, 255, 20, 0.05);
+}
+
+/* blue: routed with a cleared-to-land path. */
+.flight-strip.strip-state-blue {
+  border-left-color: #3ba7ff;
+  background: rgba(59, 167, 255, 0.12);
+}
+
+/* grey: concealed by fog and not the selected/communicating plane. */
+.flight-strip.strip-state-grey {
+  border-left-color: #9aa0a6;
+  background: rgba(154, 160, 166, 0.12);
+  color: rgba(220, 220, 220, 0.7);
+}
+
+/* red (solid): emergency or low fuel. */
+.flight-strip.strip-state-red {
+  border-left-color: var(--danger);
+  background: rgba(255, 59, 48, 0.18);
+}
+
+/* red-blink: near-collision pair — both strips blink red. */
+.flight-strip.strip-state-red-blink {
+  border-left-color: var(--danger);
+  animation: strip-blink-red 0.6s steps(2, start) infinite;
+}
+
+/* Selected highlight stays visible ON TOP of any state color. */
 .flight-strip.selected {
   background: rgba(255, 255, 255, 0.12);
   border-color: #fff;
   box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
 }
 
-.flight-strip.fuel-low {
-  border-left-color: #ffd23b;
-}
-
-.flight-strip.fuel-critical {
-  border-left-color: var(--danger);
-  animation: strip-blink 0.6s steps(2, start) infinite;
-}
-
-@keyframes strip-blink {
+@keyframes strip-blink-red {
   to {
-    background: rgba(255, 59, 48, 0.18);
+    background: rgba(255, 59, 48, 0.32);
+    border-left-color: #fff;
   }
 }
 
@@ -200,12 +240,57 @@ body {
   transition: width 0.2s linear;
 }
 
-.flight-strip.fuel-low .strip-fuel-fill {
-  background: #ffd23b;
+/* The fuel BAR stays as the live gauge: it tints toward danger as it empties,
+   independent of the strip-level state (low fuel also drives the red state). */
+.flight-strip.strip-state-blue .strip-fuel-fill {
+  background: #3ba7ff;
 }
 
-.flight-strip.fuel-critical .strip-fuel-fill {
+.flight-strip.strip-state-red .strip-fuel-fill,
+.flight-strip.strip-state-red-blink .strip-fuel-fill {
   background: var(--danger);
+}
+
+.flight-strip.strip-state-grey .strip-fuel-fill {
+  background: #9aa0a6;
+}
+
+/* Class badge: small colored chip carrying the aircraft class abbreviation. */
+.strip-badge {
+  flex: 0 0 auto;
+  font-size: 0.68em;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+  color: #001405;
+  padding: 0 4px;
+  border-radius: 2px;
+  line-height: 1.4;
+}
+
+/* Assigned landing surface marker. Forced vs preferred vs any are visually
+   distinct (also spelled out in the .strip-legend above the list). */
+.strip-assign {
+  margin-left: 6px;
+  font-size: 0.82em;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.strip-assign.asg-forced,
+.strip-legend .asg-forced {
+  color: #ff7a3c;
+  text-shadow: 0 0 4px rgba(255, 122, 60, 0.6);
+}
+
+.strip-assign.asg-preferred,
+.strip-legend .asg-preferred {
+  color: #8fd0ff;
+}
+
+.strip-assign.asg-any,
+.strip-legend .asg-any {
+  color: var(--crt-green-dim);
+  font-weight: normal;
 }
 
 /* --- Screen overlays (menu / summary / shop / game over) ----------------- */
