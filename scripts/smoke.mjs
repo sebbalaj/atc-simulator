@@ -275,6 +275,26 @@ check("all four maps spawn/update without exception", () => {
   assert.equal(ALL_KINDS.length, 4, "four aircraft kinds defined");
 });
 
+// --- 7. FEAT-006: tighter fuel does NOT trigger an early fuel-out cascade ----
+// With the FEAT-006 rebalance (fuelMax cut ~34-38%) a plane left holding still
+// survives for minutes; a healthy early-shift stretch must show zero fuel-outs
+// on every map. If someone cuts fuelMax catastrophically low this fails, so it
+// is revert-sensitive to the rebalance staying winnable.
+check("no fuel-out cascade across the four maps in an early-shift window", () => {
+  for (const mapId of ["map1", "map2", "map3", "map4"]) {
+    const game = createHeadlessGame(mapId);
+    let fuelOuts = 0;
+    game.bus.on("aircraft:fuelout", () => {
+      fuelOuts++;
+    });
+    game.systems.spawn.spawnOne();
+    // ~60 seconds of sim time: well short of the ~188s tightest holding-exhaust
+    // window, so even un-routed (holding) traffic must not have burned out yet.
+    for (let i = 0; i < 3600 && !game.gameOver; i++) tick(game);
+    assert.equal(fuelOuts, 0, `map ${mapId}: ${fuelOuts} fuel-out(s) in a 60s window (expected 0)`);
+  }
+});
+
 console.log("");
 if (failures > 0) {
   console.error(`SMOKE TEST FAILED: ${failures} check(s) failed.`);

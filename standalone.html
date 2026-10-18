@@ -1058,15 +1058,34 @@ body {
           //
           // FEAT-003 tuning: cruise speeds were cut to 0.25x of the prior controllable
           // band (light 40->10, heli 30->7.5, commercial 70->17.5, supersonic 100->25) so
-          // aircraft read at a calm, deliberate pace. Because fuelMax is measured in
-          // SECONDS of flight, the reachable distance per fuel-second drops to 1/4 with a
-          // 1/4-speed cut, so fuelMax was scaled up ~4x (light 200->640, heli 250->760,
-          // commercial 340->1000, supersonic 150->480) to keep planes able to reach a
-          // runway from the spawn perimeter with margin; SUPERSONIC keeps the tightest
-          // reserve of the four. The economy efficiency window (economy.js) was widened
-          // and the spawn cadence (spawnSystem.js) lengthened to match the ~4x-longer
-          // time-in-airspace. Class ORDERING is preserved: helicopter 7.5 <= light 10 <
-          // commercial 17.5 < supersonic 25.
+          // aircraft read at a calm, deliberate pace. Class SPEED ORDERING is preserved:
+          // helicopter 7.5 <= light 10 < commercial 17.5 < supersonic 25.
+          //
+          // FEAT-006 fuel rebalance ("fuel felt too easy"): the FEAT-003 slowdown was
+          // paired with a blunt ~4x fuelMax scale-up (light 200->640, heli 250->760,
+          // commercial 340->1000, supersonic 150->480) that left every tank so deep that
+          // running out was never a real threat. Fuel is measured in SECONDS of flight,
+          // so we re-derive the budgets from map geometry: the worst-case DIRECT route
+          // from the spawn perimeter (map.spawnRadius) to the farthest surface a class may
+          // be sent to, at its cruise speed, is the floor. Measured maxima across the four
+          // 400x700 maps (farthest eligible surface): light ~40s, commercial ~23s,
+          // helicopter ~69s, supersonic ~16s. fuelMax is set BELOW the old values but
+          // comfortably ABOVE floor*1.3 so a direct route always lands with margin, while
+          // a plane left HOLDING (burns HOLDING_BURN_MULTIPLIER=1.6x) or routed the long
+          // way can now genuinely run out:
+          //   light 640->420 (34% cut), commercial 1000->620 (38%),
+          //   helicopter 760->500 (34%), supersonic 480->300 (38%).
+          // RESERVE ORDERING (the gameplay-meaningful "tightest reserve"): the time a
+          // full tank survives while HOLDING, fuelMax/1.6, is shortest for SUPERSONIC
+          // (300/1.6 ~= 188s) < light (263s) < helicopter (313s) < commercial (388s), so
+          // a supersonic left to loiter is the first to flame out. SUPERSONIC is also the
+          // lowest absolute tank (300) and COMMERCIAL the highest (620), matching intent
+          // (helicopter/light low, commercial highest absolute, supersonic tightest).
+          // See test/fuelBalance.test.js for the revert-sensitive winnability + threat +
+          // ordering invariants computed from createMap geometry. The economy efficiency
+          // window (economy.js) and spawn cadence (spawnSystem.js) were left as tuned in
+          // FEAT-003; shorter tanks do not change route DURATION (speeds are unchanged),
+          // so both windows stay coherent.
           //
           // FEAT-004 ("make everything smaller"): the whole airport is scaled down by a
           // consistent 0.70 factor (a 30% reduction) for phone readability - runways,
@@ -1124,7 +1143,7 @@ body {
               hitboxRadius: 7,
               separationRadius: 46,
               wakeSeparation: 0,
-              fuelMax: 640,
+              fuelMax: 420, // FEAT-006: 640 -> 420 (direct floor ~40s, holds ~263s)
               runwayLengthRequired: 63, // FEAT-004: 90 * 0.70
               passengers: [1, 4],
               color: "#8fff6a",
@@ -1142,7 +1161,7 @@ body {
               hitboxRadius: 11,
               separationRadius: 64,
               wakeSeparation: 90, // trailing traffic must stay well clear of the wake
-              fuelMax: 1000,
+              fuelMax: 620, // FEAT-006: 1000 -> 620 (highest absolute; holds ~388s)
               runwayLengthRequired: 133, // FEAT-004: 190 * 0.70
               passengers: [90, 220],
               color: "#39ff14",
@@ -1160,7 +1179,7 @@ body {
               hitboxRadius: 8,
               separationRadius: 42,
               wakeSeparation: 0,
-              fuelMax: 760,
+              fuelMax: 500, // FEAT-006: 760 -> 500 (direct floor ~69s, holds ~313s)
               runwayLengthRequired: 0, // uses the helipad, not a runway
               passengers: [1, 8],
               color: "#6ad1ff",
@@ -1178,7 +1197,7 @@ body {
               hitboxRadius: 9,
               separationRadius: 72,
               wakeSeparation: 0,
-              fuelMax: 480, // minimal reserve (tightest margin of the four classes)
+              fuelMax: 300, // FEAT-006: 480 -> 300 (tightest reserve: holds only ~188s)
               runwayLengthRequired: 154, // FEAT-004: 220 * 0.70
               passengers: [1, 2],
               color: "#ffd23b",

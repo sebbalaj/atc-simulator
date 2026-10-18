@@ -187,11 +187,22 @@ test/
 | 3 | **Coastal Hub** | A long inland international runway, an **aircraft carrier that is a moving runway** steaming back and forth (its approach cone and rollout track the deck), and offshore oil-rig helipads over the water. |
 | 4 | **Mega Hub** | Four parallel runways, a busier spawn stream (~40% more traffic), and **strict wake-turbulence separation** — a larger bubble is enforced behind every COMMERCIAL leader (`rules.wakeMultiplier`). The performance stress case. |
 
-Aircraft classes (cruise speeds in radar px/s): **Helicopter** (30, slowest,
-lands on the helipad from any heading), **Light** (40, nimble, short runway),
-**Commercial** (70, wide turns, long runway, emits wake turbulence),
-**Supersonic** (100, fastest, tiny fuel margin, cannot make sharp turns). Speeds
-are tuned so aircraft cross the scope at a controllable pace rather than zooming.
+Aircraft classes (cruise speeds in radar px/s): **Helicopter** (7.5, slowest,
+lands on the helipad from any heading), **Light** (10, nimble, short runway),
+**Commercial** (17.5, wide turns, long runway, emits wake turbulence),
+**Supersonic** (25, fastest, tightest fuel reserve, cannot make sharp turns).
+Speeds are tuned so aircraft cross the scope at a controllable pace rather than
+zooming.
+
+Fuel is measured in **seconds of flight** and is deliberately a real constraint:
+a direct route from the spawn perimeter always lands with margin, but a plane
+left **holding** (it burns 1.6× faster) or routed the long way can run out. Tank
+sizes (seconds): **Supersonic 300** (lowest, flames out first when loitering —
+the tightest reserve), **Light 420**, **Helicopter 500**, **Commercial 620**
+(deepest tank). The budgets are derived from each map's worst-case direct
+spawn-to-runway distance with a safety margin, then checked by
+`test/fuelBalance.test.js` (winnability + threat + ordering invariants computed
+from the map geometry).
 
 ## Economy, upgrades, and events
 
