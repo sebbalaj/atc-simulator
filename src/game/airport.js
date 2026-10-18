@@ -147,7 +147,115 @@ export function isRunwayAligned(runway, endpoint, approachHeading, aircraftDef) 
 export function isHelipadLanding(helipad, endpoint, aircraftDef) {
   if (!aircraftDef.landsOnHelipad) return false;
   const d = Math.hypot(endpoint.x - helipad.x, endpoint.y - helipad.y);
-  return d <= helipad.radius * 1.5;
+  return d <= helipadCaptureRadius(helipad);
+}
+
+/**
+ * Capture radius for a helipad (#2 fix). A route that ends on OR near the pad
+ * should reliably land from ANY heading, so we use a generous band that scales
+ * with the pad radius but never falls below a comfortable fixed px minimum
+ * (small pads on a phone were effectively un-landable with the old radius*1.5).
+ * Pure helper.
+ */
+export function helipadCaptureRadius(helipad) {
+  const r = helipad.radius ?? 11;
+  return Math.max(r * 3, 34);
+}
+
+/**
+ * Forgiving runway CAPTURE used as a fallback when the strict isRunwayAligned
+ * cone rejects an approach that a player clearly meant as a landing (ends short
+ * of the cone mouth, just past the far end, or slightly off-axis in heading).
+ *
+ * For every runway and each of its two landing directions it measures how far
+ * `endpoint` sits from the runway CENTERLINE SEGMENT (threshold..far) and from
+ * the threshold, and whether the drawn `approachHeading` roughly matches that
+ * landing direction. A direction captures when:
+ *   - the lateral distance to the centerline is within a generous band
+ *     (a comfortable multiple of runway.width, plus the cone allowance), AND
+ *   - the endpoint is longitudinally within the strip plus a lead-in before the
+ *     threshold and a margin past the far end, AND
+ *   - the drawn heading is not reversed/perpendicular (within ~65deg of the
+ *     landing direction — looser than the strict 28deg cone tol but still
+ *     rejecting a crossing or backwards drag).
+ *
+ * Among the capturing candidates the one whose landing direction best matches
+ * the drawn heading (then the closest) wins. When `opts.forcedRunwayId` is set
+ * the capture is restricted to that runway id (a forced jet cannot capture a
+ * different strip). Returns { type:'runway', surface, direction, detail } or
+ * null. Pure function; never mutates the map.
+ *
+ * @param {object} map built map (runways[])
+ * @param {{x:number,y:number}} endpoint drawn route endpoint
+ * @param {number} approachHeading averaged tail heading (radians)
+ * @param {object} def aircraft definition (runwayLengthRequired, usesRunway)
+ * @param {{forcedRunwayId?:string}} [opts]
+ */
+export function captureRunway(map, endpoint, approachHeading, def, opts = {}) {
+  if (!def.usesRunway || !map.runways || map.runways.length === 0) return null;
+  const forcedRunwayId = opts.forcedRunwayId ?? null;
+  // Widest heading error we will still treat as a landing attempt (not a
+  // crossing/reverse). 65deg keeps a clearly-perpendicular (90deg) or reversed
+  // (180deg) drag rejected while accepting the ~35-45deg off-axis cases.
+  const MAX_HEADING_ERR = (65 * Math.PI) / 180;
+
+  let best = null;
+  for (const runway of map.runways) {
+    if (forcedRunwayId && runway.id !== forcedRunwayId) continue;
+    if (runway.length < def.runwayLengthRequired) continue;
+
+    for (const dir of [runway.heading, normalizeAngle(runway.heading + Math.PI)]) {
+      const headErr = angleDifference(approachHeading, dir);
+      if (headErr > MAX_HEADING_ERR) continue;
+
+      const virtual = { ...runway, heading: dir };
+      const thr = runwayThreshold(virtual);
+      const far = runwayFarEnd(virtual);
+
+      // Decompose the endpoint relative to the threshold along/against the
+      // landing direction (same basis as isRunwayAligned).
+      const dx = endpoint.x - thr.x;
+      const dy = endpoint.y - thr.y;
+      const along = dx * Math.cos(dir) + dy * Math.sin(dir); // + = toward far end
+      const lateral = -dx * Math.sin(dir) + dy * Math.cos(dir);
+
+      // Lateral capture band: a comfortable multiple of the runway width plus
+      // the approach cone allowance, so a slightly-off-centerline endpoint
+      // snaps while a far-off (120px) one does not.
+      const latBand = runway.width * 4 + 16;
+      if (Math.abs(lateral) > latBand) continue;
+
+      // Longitudinal window: from a lead-in BEFORE the threshold (so a short
+      // drag that stops ahead of the cone mouth still captures) through the far
+      // end plus a margin (so a drag that overshoots the far end captures too).
+      const leadIn = runway.approach.coneLength + runway.length; // generous before-threshold reach
+      const farMargin = runway.width * 2;
+      if (along < -leadIn || along > runway.length + farMargin) continue;
+
+      // Distance from the endpoint to the centerline SEGMENT (for scoring).
+      const alongClamped = Math.max(0, Math.min(runway.length, along));
+      const segX = thr.x + Math.cos(dir) * alongClamped;
+      const segY = thr.y + Math.sin(dir) * alongClamped;
+      const segDist = Math.hypot(endpoint.x - segX, endpoint.y - segY);
+
+      // Score: prefer the direction whose heading matches best, then closest.
+      const score = headErr * 120 + segDist;
+      if (!best || score < best.score) {
+        best = {
+          type: "runway",
+          surface: runway,
+          direction: dir,
+          detail: { distance: Math.hypot(dx, dy), segDist, headErr, capture: true },
+          score,
+        };
+      }
+    }
+  }
+  if (best) {
+    const { score, ...rest } = best;
+    return rest;
+  }
+  return null;
 }
 
 /**

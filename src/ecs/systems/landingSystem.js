@@ -12,6 +12,7 @@ import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import {
   findLandingTarget,
+  captureRunway,
   runwayThreshold,
   runwayFarEnd,
   isRunwayClear,
@@ -103,10 +104,23 @@ export function createLandingSystem(game) {
       }
 
       // Fallback: if no clearance was recorded but the current path tail happens
-      // to sit in a valid approach, clear it now.
+      // to sit in a valid approach, clear it now. Mirror the input-layer snap:
+      // strict cone first, then the forgiving captureRunway, and reject a runway
+      // whose id contradicts a forced assignment so a forced jet cannot land on
+      // the wrong strip.
       if (!ac.clearance) {
         const { point, heading } = endpointAndHeading(path, t);
-        const target = findLandingTarget(map, point, heading, def);
+        const forcedRunwayId =
+          ac.assignment && ac.assignment.mode === "forced" && ac.assignment.kind === "runway"
+            ? ac.assignment.runwayId
+            : null;
+        let target = findLandingTarget(map, point, heading, def);
+        if (target && target.type === "runway" && forcedRunwayId && target.surface.id !== forcedRunwayId) {
+          target = null;
+        }
+        if (!target && def.usesRunway) {
+          target = captureRunway(map, point, heading, def, { forcedRunwayId });
+        }
         if (!target) continue;
         if (target.type === "runway") {
           const runway = target.surface;

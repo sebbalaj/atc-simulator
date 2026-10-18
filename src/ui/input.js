@@ -18,6 +18,9 @@ import { getAircraftDef } from "../game/aircraft.js";
 import { rebuildPath } from "../ecs/systems/movementSystem.js";
 import {
   findLandingTarget,
+  captureRunway,
+  isHelipadLanding,
+  helipadCaptureRadius,
   runwayThreshold,
   runwayFarEnd,
   holdingPatternPoints,
@@ -216,7 +219,7 @@ export function finalizePath(game, id, points) {
     if (game.bus) game.bus.emit("emergency:hospitalreached", { id, kind: ac.kind });
   }
 
-  const snapped = snapToLanding(map, points, approachHeading, def);
+  const snapped = snapToLanding(map, points, approachHeading, def, ac.assignment);
 
   path.holding = snapped.holding ?? false;
   path.points = snapped.points;
@@ -232,53 +235,131 @@ export function finalizePath(game, id, points) {
 }
 
 /**
- * If the endpoint of `points` falls in a valid landing surface, extend the path
- * so it runs down the runway centerline (or onto the helipad). Returns
- * {points, locked}. Pure function.
+ * If the endpoint of `points` falls on (or near) a valid landing surface, extend
+ * the path so it runs down the runway centerline (or onto the helipad) and lock
+ * it with a recorded clearance. Returns {points, locked, clearance, holding?}.
+ *
+ * Resolution order (FEAT-002 landing-reliability fix):
+ *   1. Strict findLandingTarget — preserves the precise cone behavior and all
+ *      existing snap tests when the player drags a clean approach.
+ *   2. Forgiving captureRunway / widened helipad capture — catches the common
+ *      "scuffed" approaches (short of the cone mouth, past the far end, slightly
+ *      off-axis, wobbly tail) that the strict cone rejected.
+ * On ANY capture (strict OR forgiving) the tail is AUTO-APPENDED with a short
+ * runway-aligned lead-in segment and then the threshold point, so the built
+ * polyline's final course is ALWAYS the legal landing heading. This guarantees
+ * the landing system's windAllows / approachHeadingFromPath checks see a legal
+ * final approach and commit the landing.
+ *
+ * `assignment` (from Aircraft.assignment) is honored: when mode === 'forced' and
+ * it names a runwayId, capture is restricted to that runway so a forced jet
+ * cannot land on the wrong strip. A forced-pad helicopter only captures pads.
+ * Pure function.
+ *
+ * @param {object} map built map
+ * @param {Array<{x:number,y:number}>} points drawn route
+ * @param {number} approachHeading averaged tail heading (radians)
+ * @param {object} def aircraft definition
+ * @param {object|null} [assignment] Aircraft.assignment
  */
-export function snapToLanding(map, points, approachHeading, def) {
+export function snapToLanding(map, points, approachHeading, def, assignment = null) {
   const end = points[points.length - 1];
-  const target = findLandingTarget(map, end, approachHeading, def);
-  if (!target) {
-    // Holding pattern: if the route ends near the hold fix, append a circular
-    // orbit so the plane loops there (burning fuel) instead of flying off.
-    if (map.holdFix && isNearHoldFix(map.holdFix, end)) {
-      const orbit = holdingPatternPoints(map.holdFix);
-      return {
-        points: points.concat(orbit),
-        locked: false,
-        holding: true,
-        clearance: null,
-      };
+  const forced = assignment && assignment.mode === "forced" ? assignment : null;
+  const forcedRunwayId = forced && forced.kind === "runway" ? forced.runwayId : null;
+
+  // --- Helipad (helicopters) -----------------------------------------------
+  // A forced-pad assignment only lands on a pad; otherwise strict helipad
+  // capture still runs first via findLandingTarget below. Here we also provide a
+  // widened fallback so a route ending NEAR the pad (any heading) captures.
+  if (def.landsOnHelipad) {
+    const pads = map.helipads && map.helipads.length ? map.helipads : map.helipad ? [map.helipad] : [];
+    let padTarget = null;
+    // Strict first (keeps the primary-pad behavior), then widened across pads.
+    if (map.helipad && isHelipadLanding(map.helipad, end, def)) {
+      padTarget = map.helipad;
+    } else {
+      let bestD = Infinity;
+      for (const pad of pads) {
+        const d = Math.hypot(end.x - pad.x, end.y - pad.y);
+        if (d <= helipadCaptureRadius(pad) && d < bestD) {
+          bestD = d;
+          padTarget = pad;
+        }
+      }
     }
-    return { points: points.slice(), locked: false, clearance: null };
+    if (padTarget) {
+      return buildHelipadSnap(points, padTarget);
+    }
+    // Fall through: no pad captured. A helicopter does not use runways.
   }
 
-  if (target.type === "runway") {
-    const runway = target.surface;
-    const dirRunway = { ...runway, heading: target.direction };
-    const thr = runwayThreshold(dirRunway);
-    const far = runwayFarEnd(dirRunway);
-    // Replace the raw tail with the threshold so the plane tracks the centerline
-    // onto the numbers; the landing system touches the plane down immediately at
-    // the threshold (no far-end rollout) once it reaches this route end.
-    const out = points.slice();
-    out.push({ x: thr.x, y: thr.y });
+  // --- Runway: strict cone first, then forgiving capture -------------------
+  let target = findLandingTarget(map, end, approachHeading, def);
+  // If the strict target contradicts a forced runway, drop it so we re-resolve
+  // (the forced jet must not commit to the wrong strip).
+  if (target && target.type === "runway" && forcedRunwayId && target.surface.id !== forcedRunwayId) {
+    target = null;
+  }
+  if (!target && def.usesRunway) {
+    target = captureRunway(map, end, approachHeading, def, { forcedRunwayId });
+  }
+
+  if (target && target.type === "runway") {
+    return buildRunwaySnap(points, target.surface, target.direction);
+  }
+  if (target && target.type === "helipad") {
+    return buildHelipadSnap(points, target.surface);
+  }
+
+  // --- Holding pattern (no landing) ----------------------------------------
+  if (map.holdFix && isNearHoldFix(map.holdFix, end)) {
+    const orbit = holdingPatternPoints(map.holdFix);
     return {
-      points: out,
-      locked: true,
-      clearance: {
-        surface: "runway",
-        runwayId: runway.id,
-        heading: target.direction,
-        threshold: { x: thr.x, y: thr.y },
-        stop: { x: far.x, y: far.y },
-      },
+      points: points.concat(orbit),
+      locked: false,
+      holding: true,
+      clearance: null,
     };
   }
+  return { points: points.slice(), locked: false, clearance: null };
+}
 
-  // Helipad: steer onto the pad center.
-  const pad = target.surface;
+/**
+ * Append a runway-aligned lead-in + threshold so the built route's final course
+ * is exactly the legal landing heading, and return a locked runway clearance.
+ * Used for BOTH the strict and the forgiving capture so every accepted approach
+ * ends on the centerline. Pure helper.
+ */
+function buildRunwaySnap(points, runway, direction) {
+  const dirRunway = { ...runway, heading: direction };
+  const thr = runwayThreshold(dirRunway);
+  const far = runwayFarEnd(dirRunway);
+  // A short straight lead-in BEFORE the threshold, aligned to the landing
+  // direction, so the tail heading reads as the runway heading even when the
+  // player's drag approached off-axis. Scale the lead-in with the cone length.
+  const lead = Math.max(24, runway.approach.coneLength * 0.35);
+  const leadPt = {
+    x: thr.x - Math.cos(direction) * lead,
+    y: thr.y - Math.sin(direction) * lead,
+  };
+  const out = points.slice();
+  out.push(leadPt);
+  out.push({ x: thr.x, y: thr.y });
+  return {
+    points: out,
+    locked: true,
+    clearance: {
+      surface: "runway",
+      runwayId: runway.id,
+      heading: direction,
+      threshold: { x: thr.x, y: thr.y },
+      stop: { x: far.x, y: far.y },
+    },
+  };
+}
+
+/** Append the pad center and return a locked helipad clearance. Pure helper. */
+function buildHelipadSnap(points, pad) {
   const out = points.slice();
   out.push({ x: pad.x, y: pad.y });
   return {
