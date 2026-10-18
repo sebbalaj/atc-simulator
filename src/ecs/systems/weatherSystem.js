@@ -32,6 +32,17 @@ export function createWeatherSystem(game) {
     controller,
     windDirection: controller.state.windDirection,
     windTolerance: controller.state.windTolerance,
+    // Wind-shift transition window (FEAT-003). During an active transition BOTH
+    // the old and new into-wind ends are routable; landing + render read these
+    // fields without importing the controller. windPrevDirection mirrors
+    // transition.fromDirection for convenience.
+    windPrevDirection: controller.state.windPrevDirection,
+    windTransition: {
+      active: controller.state.windTransition.active,
+      fromDirection: controller.state.windTransition.fromDirection,
+      toDirection: controller.state.windTransition.toDirection,
+      remaining: controller.state.windTransition.remaining,
+    },
     storms: controller.state.storms,
     fogIntensity: 0,
     fogVisibility: Infinity,
@@ -49,6 +60,13 @@ export function createWeatherSystem(game) {
 
     // Refresh the published snapshot.
     game.weather.windDirection = controller.state.windDirection;
+    game.weather.windPrevDirection = controller.state.windPrevDirection;
+    game.weather.windTransition = {
+      active: controller.state.windTransition.active,
+      fromDirection: controller.state.windTransition.fromDirection,
+      toDirection: controller.state.windTransition.toDirection,
+      remaining: controller.state.windTransition.remaining,
+    };
     game.weather.storms = controller.state.storms;
     game.weather.fogIntensity = controller.state.fogIntensity;
     // The ILS flag is owned by FEAT-005; read it fresh each tick (default false).
@@ -62,8 +80,10 @@ export function createWeatherSystem(game) {
     // Announce changes via banners / events.
     for (const ev of events) {
       if (ev.type === "wind") {
-        game.flashBanner && game.flashBanner("WIND SHIFT - APPROACH REVERSED");
+        game.flashBanner && game.flashBanner("WIND SHIFT - BOTH ENDS OPEN BRIEFLY");
         bus.emit("weather:wind", { windDirection: ev.windDirection });
+      } else if (ev.type === "windTransitionEnd") {
+        bus.emit("weather:windtransitionend", { windDirection: ev.windDirection });
       } else if (ev.type === "storm") {
         game.flashBanner && game.flashBanner("THUNDERSTORM - ROUTE AROUND CELLS");
         bus.emit("weather:storm", { cell: ev.cell });

@@ -190,6 +190,13 @@ export function drawWindIndicator(ctx, weather) {
   ctx.fill();
   ctx.font = '9px "Courier New", monospace';
   ctx.fillText("WIND", ox - 14, oy - 18);
+  // FEAT-003: during a wind-shift transition both runway ends are briefly
+  // routable; flag it so the player knows the window is open.
+  if (weather.windTransition && weather.windTransition.active) {
+    ctx.fillStyle = "rgba(255, 214, 70, 0.95)";
+    ctx.font = 'bold 8px "Courier New", monospace';
+    ctx.fillText("BOTH ENDS", ox + 22, oy - 18);
+  }
   ctx.restore();
 }
 

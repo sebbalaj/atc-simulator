@@ -2099,6 +2099,66 @@ body {
             return angleDifference(landingHeading, ideal) <= tolerance;
           }
 
+          /**
+           * The currently-legal LANDING DIRECTIONS (travel headings on rollout) for a
+           * runway under a wind state. At steady state exactly ONE of a runway's two ends
+           * is into the wind and therefore legal. During a wind-shift transition window
+           * BOTH the end that is into the CURRENT wind and the end that was into the
+           * PREVIOUS wind are legal, so the player can keep routing to the old end while
+           * the shift settles.
+           *
+           * The runway is bidirectional: its two candidate landing headings are
+           * `runway.heading` and its reciprocal. A heading is legal when it is into the
+           * current wind (isApproachDirectionValid vs windDirection) OR, during an active
+           * transition, into the previous wind (vs windPrevDirection).
+           *
+           * Pure function. `windState` is a plain snapshot:
+           *   { windDirection, windTolerance?, transition?: { active, fromDirection } }
+           * `fromDirection` is the PREVIOUS wind direction (blowing-toward heading).
+           *
+           * @param {object} runway runway with a base `heading`
+           * @param {object} windState wind snapshot
+           * @returns {number[]} normalized legal landing headings (0, 1 or 2 entries)
+           */
+          function activeLandingDirections(runway, windState) {
+            if (!runway || !windState || windState.windDirection == null) return [];
+            const tol = windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
+            const transition = windState.transition;
+            const prevDir =
+              transition && transition.active && transition.fromDirection != null
+                ? transition.fromDirection
+                : null;
+            const ends = [normalizeAngle(runway.heading), normalizeAngle(runway.heading + Math.PI)];
+            const out = [];
+            for (const dir of ends) {
+              const intoCurrent = isApproachDirectionValid(dir, windState.windDirection, tol);
+              const intoPrev = prevDir != null && isApproachDirectionValid(dir, prevDir, tol);
+              if (intoCurrent || intoPrev) out.push(dir);
+            }
+            return out;
+          }
+
+          /**
+           * Whether a resolved landing direction is legal for a runway under a wind state,
+           * accounting for the transition window (legal if into the current wind OR, during
+           * a transition, into the previous wind). Thin wrapper over
+           * activeLandingDirections using an angular match. Pure function.
+           *
+           * @param {number} landingHeading travel heading on rollout
+           * @param {object} windState wind snapshot (see activeLandingDirections)
+           * @param {number} [tol] half-angle window (defaults to windState.windTolerance)
+           */
+          function isLandingDirectionLegal(landingHeading, windState, tol) {
+            if (landingHeading == null || !windState || windState.windDirection == null) return true;
+            const tolerance = tol ?? windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
+            if (isApproachDirectionValid(landingHeading, windState.windDirection, tolerance)) return true;
+            const transition = windState.transition;
+            if (transition && transition.active && transition.fromDirection != null) {
+              if (isApproachDirectionValid(landingHeading, transition.fromDirection, tolerance)) return true;
+            }
+            return false;
+          }
+
           // --- Thunderstorm cells ----------------------------------------------------
 
           /**
@@ -2222,6 +2282,10 @@ body {
             fogMaxInterval: 110,
             fogDuration: [25, 50],
             windTolerance: Math.PI / 2,
+            // Length (s of sim time) of the transition window opened on a wind shift,
+            // during which BOTH the old and new into-wind ends remain routable so the
+            // player can adapt before the old end becomes illegal.
+            windTransitionSeconds: 8,
           });
 
           /**
@@ -2245,6 +2309,11 @@ body {
               // (heading 0, landing toward +x) is valid: wind blowing toward -x (west).
               windDirection: Math.PI,
               windTolerance: cfg.windTolerance,
+              // Wind-shift transition window. When a shift occurs we record the previous
+              // wind direction and open a timer; while the timer is active BOTH the old
+              // and new into-wind ends are routable. After it elapses only the new end is.
+              windPrevDirection: null,
+              windTransition: { active: false, fromDirection: null, toDirection: null, remaining: 0 },
               storms: [],
               fogIntensity: 0,
               _nextStormId: 1,
@@ -2260,13 +2329,41 @@ body {
               return rng ? rng.range(a, b) : (a + b) / 2;
             }
 
-            /** Rotate the wind so the opposite approach becomes the valid one. */
+            /**
+             * Rotate the wind so the opposite approach becomes the valid one, and OPEN a
+             * transition window during which BOTH the old and new into-wind ends stay
+             * routable. The previous wind direction is recorded so landing legality and
+             * the direction indicator can treat both ends as active until the window
+             * closes.
+             */
             function shiftWind() {
               // Flip ~180 degrees with a little scatter so it reads as a real crosswind
               // reversal but stays within the new opposite window.
               const jitter = rng ? rng.range(-0.3, 0.3) : 0;
+              const prev = state.windDirection;
               state.windDirection = normalizeAngle(state.windDirection + Math.PI + jitter);
+              state.windPrevDirection = prev;
+              state.windTransition = {
+                active: true,
+                fromDirection: prev,
+                toDirection: state.windDirection,
+                remaining: cfg.windTransitionSeconds,
+              };
               return state.windDirection;
+            }
+
+            /** Current wind snapshot shape consumed by the pure direction helpers. */
+            function windStateSnapshot() {
+              return {
+                windDirection: state.windDirection,
+                windTolerance: state.windTolerance,
+                transition: {
+                  active: state.windTransition.active,
+                  fromDirection: state.windTransition.fromDirection,
+                  toDirection: state.windTransition.toDirection,
+                  remaining: state.windTransition.remaining,
+                },
+              };
             }
 
             /** Spawn a storm cell drifting across the field from a random edge. */
@@ -2325,7 +2422,25 @@ body {
               if (windTimer <= 0) {
                 windTimer = randRange(cfg.windShiftMinInterval, cfg.windShiftMaxInterval);
                 shiftWind();
-                events.push({ type: "wind", windDirection: state.windDirection });
+                events.push({
+                  type: "wind",
+                  windDirection: state.windDirection,
+                  transition: true,
+                  fromDirection: state.windTransition.fromDirection,
+                });
+              }
+
+              // Advance the transition window; close it (only the new end stays legal)
+              // when the timer elapses.
+              if (state.windTransition.active) {
+                state.windTransition.remaining -= dt;
+                if (state.windTransition.remaining <= 0) {
+                  state.windTransition.active = false;
+                  state.windTransition.remaining = 0;
+                  state.windTransition.fromDirection = null;
+                  state.windPrevDirection = null;
+                  events.push({ type: "windTransitionEnd", windDirection: state.windDirection });
+                }
               }
 
               // Storm spawn schedule (respect the cap).
@@ -2367,11 +2482,15 @@ body {
               // Expose the schedulers for tests / manual triggering.
               shiftWind,
               spawnStorm,
+              windStateSnapshot,
               get storms() {
                 return state.storms;
               },
               get windDirection() {
                 return state.windDirection;
+              },
+              get windTransition() {
+                return state.windTransition;
               },
               get fogIntensity() {
                 return state.fogIntensity;
@@ -2381,6 +2500,8 @@ body {
 
 
           exports.isApproachDirectionValid = isApproachDirectionValid;
+          exports.activeLandingDirections = activeLandingDirections;
+          exports.isLandingDirectionLegal = isLandingDirectionLegal;
           exports.createStormCell = createStormCell;
           exports.driftStorm = driftStorm;
           exports.isPointInStorm = isPointInStorm;
@@ -4617,6 +4738,17 @@ body {
               controller,
               windDirection: controller.state.windDirection,
               windTolerance: controller.state.windTolerance,
+              // Wind-shift transition window (FEAT-003). During an active transition BOTH
+              // the old and new into-wind ends are routable; landing + render read these
+              // fields without importing the controller. windPrevDirection mirrors
+              // transition.fromDirection for convenience.
+              windPrevDirection: controller.state.windPrevDirection,
+              windTransition: {
+                active: controller.state.windTransition.active,
+                fromDirection: controller.state.windTransition.fromDirection,
+                toDirection: controller.state.windTransition.toDirection,
+                remaining: controller.state.windTransition.remaining,
+              },
               storms: controller.state.storms,
               fogIntensity: 0,
               fogVisibility: Infinity,
@@ -4634,6 +4766,13 @@ body {
 
               // Refresh the published snapshot.
               game.weather.windDirection = controller.state.windDirection;
+              game.weather.windPrevDirection = controller.state.windPrevDirection;
+              game.weather.windTransition = {
+                active: controller.state.windTransition.active,
+                fromDirection: controller.state.windTransition.fromDirection,
+                toDirection: controller.state.windTransition.toDirection,
+                remaining: controller.state.windTransition.remaining,
+              };
               game.weather.storms = controller.state.storms;
               game.weather.fogIntensity = controller.state.fogIntensity;
               // The ILS flag is owned by FEAT-005; read it fresh each tick (default false).
@@ -4647,8 +4786,10 @@ body {
               // Announce changes via banners / events.
               for (const ev of events) {
                 if (ev.type === "wind") {
-                  game.flashBanner && game.flashBanner("WIND SHIFT - APPROACH REVERSED");
+                  game.flashBanner && game.flashBanner("WIND SHIFT - BOTH ENDS OPEN BRIEFLY");
                   bus.emit("weather:wind", { windDirection: ev.windDirection });
+                } else if (ev.type === "windTransitionEnd") {
+                  bus.emit("weather:windtransitionend", { windDirection: ev.windDirection });
                 } else if (ev.type === "storm") {
                   game.flashBanner && game.flashBanner("THUNDERSTORM - ROUTE AROUND CELLS");
                   bus.emit("weather:storm", { cell: ev.cell });
@@ -5100,7 +5241,7 @@ body {
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { findLandingTarget, captureRunway, runwayThreshold, runwayFarEnd, isRunwayClear, occupyRunway, approachHeadingFromPath } = require("src/game/airport.js");
-          const { isApproachDirectionValid } = require("src/game/weather.js");
+          const { isLandingDirectionLegal } = require("src/game/weather.js");
           const { isMedicalLandingAllowed, EmergencyType } = require("src/game/emergencies.js");
 
           /** Build the ECS landing system bound to a game instance. */
@@ -5134,14 +5275,16 @@ body {
             }
 
             /**
-             * Whether a resolved landing direction is legal under the current wind. With
-             * no weather state (headless construction) all directions are allowed.
-             * Helipad landings (no fixed direction) are always wind-legal.
+             * Whether a resolved landing direction is legal under the CURRENT wind OR,
+             * during an active wind-shift transition window, the PREVIOUS into-wind end
+             * (FEAT-003). This gates only NEW clearances (the no-clearance fallback). With
+             * no weather state (headless construction) all directions are allowed; helipad
+             * landings (no fixed direction) are always legal.
              */
             function windAllows(landingHeading) {
               const w = game.weather;
               if (!w || w.windDirection == null || landingHeading == null) return true;
-              return isApproachDirectionValid(landingHeading, w.windDirection, w.windTolerance);
+              return isLandingDirectionLegal(landingHeading, w);
             }
 
             /** Whether a medical-evac aircraft has satisfied the hospital-overflight gate. */
@@ -5175,11 +5318,14 @@ body {
                 // route into an approach cone / onto the helipad (see input.finalizePath).
                 // Commit the landing once the plane reaches the end of that cleared route.
                 if (path.locked && ac.clearance && path.built && path.progress >= path.built.length - 0.5) {
-                  // Reject a runway landing whose direction is now illegal under the wind
-                  // (a wind shift can invalidate a previously-cleared approach).
-                  if (ac.clearance.surface === "runway" && !windAllows(ac.clearance.heading)) {
-                    continue;
-                  }
+                  // FEAT-003 INTENTIONAL CHANGE: a plane that is ALREADY ROUTED (its path
+                  // is locked with a committed clearance) LANDS ANYWAY even if the wind
+                  // flips against its direction. The prior round re-checked
+                  // windAllows(clearance.heading) here and rejected a now-illegal cleared
+                  // approach; that re-check is REMOVED so an already-cleared plane honors
+                  // its clearance. Wind legality is enforced only when NEW clearances are
+                  // resolved (the fallback branch below and the input-layer snap), so the
+                  // one-direction-at-a-time rule still applies at ROUTING time.
                   commitLanding(id, t, ac, path);
                   continue;
                 }
@@ -5516,7 +5662,8 @@ body {
 
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
-          const { runwayThreshold, runwayFarEnd } = require("src/game/airport.js");
+          const { runwayThreshold, runwayFarEnd, runwayEndLabel, normalizeAngle } = require("src/game/airport.js");
+          const { activeLandingDirections } = require("src/game/weather.js");
           const { updateSweepDisplay, sweepPeriod } = require("src/game/radar.js");
           const { applyCamera, drawLowFuelGauges, drawProximityAlarm, drawEventBanner, drawStorms, drawHospital, drawFog, drawWindIndicator, drawEmergencyFlash, aircraftFogAlpha } = require("src/ui/hud.js");
 
@@ -5538,7 +5685,7 @@ body {
               // can be centered on screen. With no camera target this is the identity.
               ctx.save();
               applyCamera(ctx, game.camera, width, height);
-              drawAirport(ctx, game.map, activeRunwayIds(world), game.time);
+              drawAirport(ctx, game.map, activeRunwayIds(world), game.time, game.weather);
               if (game.map) drawHospital(ctx, game.map.hospital);
               drawPaths(ctx, world, blinkOn);
               // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
@@ -5637,17 +5784,38 @@ body {
            * rendered RED ("occupied / clearing") until the ground crew clears it, when it
            * returns to its normal/green styling.
            */
-          function drawAirport(ctx, map, activeIds, now = 0) {
+          function drawAirport(ctx, map, activeIds, now = 0, weather = null) {
             if (!map) return;
             const active = activeIds || new Set();
+
+            // FEAT-003: which landing DIRECTION(s) are into the wind (and therefore
+            // routable) right now. At steady state exactly one end per runway; during a
+            // wind-shift transition both ends. Emphasize the active threshold/cone and
+            // dim the inactive end so the player can see which way to land.
+            const windState =
+              weather && weather.windDirection != null
+                ? {
+                    windDirection: weather.windDirection,
+                    windTolerance: weather.windTolerance,
+                    transition: weather.windTransition,
+                  }
+                : null;
+            const dirIsActive = (runway, heading) => {
+              if (!windState) return true; // no weather => both ends drawn equally
+              const legal = activeLandingDirections(runway, windState);
+              return legal.some((d) => Math.abs(normalizeAngle(d - heading)) < 1e-3);
+            };
 
             for (const runway of map.runways) {
               // Both landing directions share one physical strip; draw cones for each.
               // The runway with a cleared aircraft gets a brighter "catch zone" cone so
-              // the active approach reads at a glance.
-              const isActive = active.has(runway.id);
-              drawApproachCone(ctx, runway, runway.heading, isActive);
-              drawApproachCone(ctx, runway, runway.heading + Math.PI, isActive);
+              // the active approach reads at a glance. A cone whose landing direction is
+              // not currently into the wind is dimmed (inactive end).
+              const cleared = active.has(runway.id);
+              const nearActive = dirIsActive(runway, runway.heading);
+              const farActive = dirIsActive(runway, runway.heading + Math.PI);
+              drawApproachCone(ctx, runway, runway.heading, cleared || nearActive, !nearActive);
+              drawApproachCone(ctx, runway, runway.heading + Math.PI, cleared || farActive, !farActive);
             }
 
             for (const runway of map.runways) {
@@ -5709,6 +5877,33 @@ body {
               ctx.lineTo(thr.x + Math.cos(perp) * hw, thr.y + Math.sin(perp) * hw);
               ctx.stroke();
 
+              // FEAT-003: label the ACTIVE (into-wind) landing end(s) with the runway end
+              // name so the player can see which direction to land on. During a transition
+              // both ends are active and both get labels. The label sits just outside the
+              // threshold, back along the approach (where inbound traffic sees it).
+              const nearActive = dirIsActive(runway, runway.heading);
+              const farActive = dirIsActive(runway, runway.heading + Math.PI);
+              ctx.save();
+              ctx.font = 'bold 8px "Courier New", monospace';
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillStyle = "rgba(255, 214, 70, 0.95)";
+              const labelOffset = runway.width + 10;
+              if (nearActive) {
+                const lx = thr.x - Math.cos(runway.heading) * labelOffset;
+                const ly = thr.y - Math.sin(runway.heading) * labelOffset;
+                ctx.fillText(runwayEndLabel(runway, runway.heading), lx, ly);
+              }
+              if (farActive) {
+                const fdir = normalizeAngle(runway.heading + Math.PI);
+                const fx = far.x - Math.cos(fdir) * labelOffset;
+                const fy = far.y - Math.sin(fdir) * labelOffset;
+                ctx.fillText(runwayEndLabel(runway, fdir), fx, fy);
+              }
+              ctx.textAlign = "left";
+              ctx.textBaseline = "alphabetic";
+              ctx.restore();
+
               // Edge lights: a row at each end. Red when occupied, green when clear — the
               // literal "runway lights turn red" cue.
               const lightColor = occupied ? "rgba(255, 59, 48, 0.95)" : "rgba(57, 255, 20, 0.9)";
@@ -5762,7 +5957,9 @@ body {
            * the runway heading and the approach snaps and locks. An `active` cone (a
            * plane already cleared into this runway) is drawn brighter.
            */
-          function drawApproachCone(ctx, runway, direction, active = false) {
+          function drawApproachCone(ctx, runway, direction, active = false, dim = false) {
+            ctx.save();
+            if (dim) ctx.globalAlpha = 0.28; // inactive (down-wind) end reads faint
             const thr = {
               x: runway.x - Math.cos(direction) * (runway.length / 2),
               y: runway.y - Math.sin(direction) * (runway.length / 2),
@@ -5807,6 +6004,7 @@ body {
             ctx.lineTo(ex2, ey2);
             ctx.stroke();
             ctx.setLineDash([]);
+            ctx.restore();
           }
 
           /**
@@ -6283,6 +6481,13 @@ body {
             ctx.fill();
             ctx.font = '9px "Courier New", monospace';
             ctx.fillText("WIND", ox - 14, oy - 18);
+            // FEAT-003: during a wind-shift transition both runway ends are briefly
+            // routable; flag it so the player knows the window is open.
+            if (weather.windTransition && weather.windTransition.active) {
+              ctx.fillStyle = "rgba(255, 214, 70, 0.95)";
+              ctx.font = 'bold 8px "Courier New", monospace';
+              ctx.fillText("BOTH ENDS", ox + 22, oy - 18);
+            }
             ctx.restore();
           }
 
@@ -7027,6 +7232,7 @@ body {
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { rebuildPath } = require("src/ecs/systems/movementSystem.js");
           const { findLandingTarget, captureRunway, isHelipadLanding, helipadCaptureRadius, runwayThreshold, runwayFarEnd, holdingPatternPoints, isOverHospital, routePassesHospital, approachHeadingFromPath } = require("src/game/airport.js");
+          const { isLandingDirectionLegal } = require("src/game/weather.js");
           const { EmergencyType } = require("src/game/emergencies.js");
 
           /** Minimum world-space distance between appended control points (px). */
@@ -7218,7 +7424,12 @@ body {
               if (game.bus) game.bus.emit("emergency:hospitalreached", { id, kind: ac.kind });
             }
 
-            const snapped = snapToLanding(map, points, approachHeading, def, ac.assignment);
+            // FEAT-003: pass the current wind snapshot so snapToLanding only offers a
+            // runway DIRECTION that is currently legal (into-wind, or either end during a
+            // wind-shift transition window). This enforces one-direction-at-a-time at
+            // ROUTING time without importing the live weather controller into the pure
+            // helper. game.weather is undefined during headless/pure usage (all legal).
+            const snapped = snapToLanding(map, points, approachHeading, def, ac.assignment, game.weather);
 
             path.holding = snapped.holding ?? false;
             path.points = snapped.points;
@@ -7260,11 +7471,20 @@ body {
            * @param {number} approachHeading averaged tail heading (radians)
            * @param {object} def aircraft definition
            * @param {object|null} [assignment] Aircraft.assignment
+           * @param {object|null} [windState] current wind snapshot (game.weather). When
+           *   present, a runway may only be cleared in a currently-legal DIRECTION
+           *   (into-wind, or either end during a transition window). When omitted (pure/
+           *   headless usage) all directions are allowed.
            */
-          function snapToLanding(map, points, approachHeading, def, assignment = null) {
+          function snapToLanding(map, points, approachHeading, def, assignment = null, windState = null) {
             const end = points[points.length - 1];
             const forced = assignment && assignment.mode === "forced" ? assignment : null;
             const forcedRunwayId = forced && forced.kind === "runway" ? forced.runwayId : null;
+
+            // Only offer a runway DIRECTION that is currently wind-legal. Helipads have no
+            // fixed landing direction so they are unaffected.
+            const directionLegal = (dir) =>
+              !windState || windState.windDirection == null || isLandingDirectionLegal(dir, windState);
 
             // --- Helipad (helicopters) -----------------------------------------------
             // A forced-pad assignment only lands on a pad; otherwise strict helipad
@@ -7299,8 +7519,18 @@ body {
             if (target && target.type === "runway" && forcedRunwayId && target.surface.id !== forcedRunwayId) {
               target = null;
             }
+            // Drop a strict target whose landing DIRECTION is not currently wind-legal so
+            // we do not clear a route to the wrong (down-wind) end.
+            if (target && target.type === "runway" && !directionLegal(target.direction)) {
+              target = null;
+            }
             if (!target && def.usesRunway) {
-              target = captureRunway(map, end, approachHeading, def, { forcedRunwayId });
+              const captured = captureRunway(map, end, approachHeading, def, { forcedRunwayId });
+              if (captured && captured.type === "runway" && directionLegal(captured.direction)) {
+                target = captured;
+              } else {
+                target = null;
+              }
             }
 
             if (target && target.type === "runway") {

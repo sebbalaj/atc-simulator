@@ -28,6 +28,7 @@ import {
   routePassesHospital,
   approachHeadingFromPath,
 } from "../game/airport.js";
+import { isLandingDirectionLegal } from "../game/weather.js";
 import { EmergencyType } from "../game/emergencies.js";
 
 /** Minimum world-space distance between appended control points (px). */
@@ -219,7 +220,12 @@ export function finalizePath(game, id, points) {
     if (game.bus) game.bus.emit("emergency:hospitalreached", { id, kind: ac.kind });
   }
 
-  const snapped = snapToLanding(map, points, approachHeading, def, ac.assignment);
+  // FEAT-003: pass the current wind snapshot so snapToLanding only offers a
+  // runway DIRECTION that is currently legal (into-wind, or either end during a
+  // wind-shift transition window). This enforces one-direction-at-a-time at
+  // ROUTING time without importing the live weather controller into the pure
+  // helper. game.weather is undefined during headless/pure usage (all legal).
+  const snapped = snapToLanding(map, points, approachHeading, def, ac.assignment, game.weather);
 
   path.holding = snapped.holding ?? false;
   path.points = snapped.points;
@@ -261,11 +267,20 @@ export function finalizePath(game, id, points) {
  * @param {number} approachHeading averaged tail heading (radians)
  * @param {object} def aircraft definition
  * @param {object|null} [assignment] Aircraft.assignment
+ * @param {object|null} [windState] current wind snapshot (game.weather). When
+ *   present, a runway may only be cleared in a currently-legal DIRECTION
+ *   (into-wind, or either end during a transition window). When omitted (pure/
+ *   headless usage) all directions are allowed.
  */
-export function snapToLanding(map, points, approachHeading, def, assignment = null) {
+export function snapToLanding(map, points, approachHeading, def, assignment = null, windState = null) {
   const end = points[points.length - 1];
   const forced = assignment && assignment.mode === "forced" ? assignment : null;
   const forcedRunwayId = forced && forced.kind === "runway" ? forced.runwayId : null;
+
+  // Only offer a runway DIRECTION that is currently wind-legal. Helipads have no
+  // fixed landing direction so they are unaffected.
+  const directionLegal = (dir) =>
+    !windState || windState.windDirection == null || isLandingDirectionLegal(dir, windState);
 
   // --- Helipad (helicopters) -----------------------------------------------
   // A forced-pad assignment only lands on a pad; otherwise strict helipad
@@ -300,8 +315,18 @@ export function snapToLanding(map, points, approachHeading, def, assignment = nu
   if (target && target.type === "runway" && forcedRunwayId && target.surface.id !== forcedRunwayId) {
     target = null;
   }
+  // Drop a strict target whose landing DIRECTION is not currently wind-legal so
+  // we do not clear a route to the wrong (down-wind) end.
+  if (target && target.type === "runway" && !directionLegal(target.direction)) {
+    target = null;
+  }
   if (!target && def.usesRunway) {
-    target = captureRunway(map, end, approachHeading, def, { forcedRunwayId });
+    const captured = captureRunway(map, end, approachHeading, def, { forcedRunwayId });
+    if (captured && captured.type === "runway" && directionLegal(captured.direction)) {
+      target = captured;
+    } else {
+      target = null;
+    }
   }
 
   if (target && target.type === "runway") {

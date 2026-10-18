@@ -19,7 +19,7 @@ import {
   occupyRunway,
   approachHeadingFromPath,
 } from "../../game/airport.js";
-import { isApproachDirectionValid } from "../../game/weather.js";
+import { isLandingDirectionLegal } from "../../game/weather.js";
 import { isMedicalLandingAllowed, EmergencyType } from "../../game/emergencies.js";
 
 /** Build the ECS landing system bound to a game instance. */
@@ -53,14 +53,16 @@ export function createLandingSystem(game) {
   }
 
   /**
-   * Whether a resolved landing direction is legal under the current wind. With
-   * no weather state (headless construction) all directions are allowed.
-   * Helipad landings (no fixed direction) are always wind-legal.
+   * Whether a resolved landing direction is legal under the CURRENT wind OR,
+   * during an active wind-shift transition window, the PREVIOUS into-wind end
+   * (FEAT-003). This gates only NEW clearances (the no-clearance fallback). With
+   * no weather state (headless construction) all directions are allowed; helipad
+   * landings (no fixed direction) are always legal.
    */
   function windAllows(landingHeading) {
     const w = game.weather;
     if (!w || w.windDirection == null || landingHeading == null) return true;
-    return isApproachDirectionValid(landingHeading, w.windDirection, w.windTolerance);
+    return isLandingDirectionLegal(landingHeading, w);
   }
 
   /** Whether a medical-evac aircraft has satisfied the hospital-overflight gate. */
@@ -94,11 +96,14 @@ export function createLandingSystem(game) {
       // route into an approach cone / onto the helipad (see input.finalizePath).
       // Commit the landing once the plane reaches the end of that cleared route.
       if (path.locked && ac.clearance && path.built && path.progress >= path.built.length - 0.5) {
-        // Reject a runway landing whose direction is now illegal under the wind
-        // (a wind shift can invalidate a previously-cleared approach).
-        if (ac.clearance.surface === "runway" && !windAllows(ac.clearance.heading)) {
-          continue;
-        }
+        // FEAT-003 INTENTIONAL CHANGE: a plane that is ALREADY ROUTED (its path
+        // is locked with a committed clearance) LANDS ANYWAY even if the wind
+        // flips against its direction. The prior round re-checked
+        // windAllows(clearance.heading) here and rejected a now-illegal cleared
+        // approach; that re-check is REMOVED so an already-cleared plane honors
+        // its clearance. Wind legality is enforced only when NEW clearances are
+        // resolved (the fallback branch below and the input-layer snap), so the
+        // one-direction-at-a-time rule still applies at ROUTING time.
         commitLanding(id, t, ac, path);
         continue;
       }

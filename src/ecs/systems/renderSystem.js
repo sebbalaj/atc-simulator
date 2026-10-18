@@ -7,7 +7,8 @@
 
 import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
-import { runwayThreshold, runwayFarEnd } from "../../game/airport.js";
+import { runwayThreshold, runwayFarEnd, runwayEndLabel, normalizeAngle } from "../../game/airport.js";
+import { activeLandingDirections } from "../../game/weather.js";
 import { updateSweepDisplay, sweepPeriod } from "../../game/radar.js";
 import {
   applyCamera,
@@ -40,7 +41,7 @@ export function createRenderSystem(game) {
     // can be centered on screen. With no camera target this is the identity.
     ctx.save();
     applyCamera(ctx, game.camera, width, height);
-    drawAirport(ctx, game.map, activeRunwayIds(world), game.time);
+    drawAirport(ctx, game.map, activeRunwayIds(world), game.time, game.weather);
     if (game.map) drawHospital(ctx, game.map.hospital);
     drawPaths(ctx, world, blinkOn);
     // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
@@ -139,17 +140,38 @@ function activeRunwayIds(world) {
  * rendered RED ("occupied / clearing") until the ground crew clears it, when it
  * returns to its normal/green styling.
  */
-export function drawAirport(ctx, map, activeIds, now = 0) {
+export function drawAirport(ctx, map, activeIds, now = 0, weather = null) {
   if (!map) return;
   const active = activeIds || new Set();
+
+  // FEAT-003: which landing DIRECTION(s) are into the wind (and therefore
+  // routable) right now. At steady state exactly one end per runway; during a
+  // wind-shift transition both ends. Emphasize the active threshold/cone and
+  // dim the inactive end so the player can see which way to land.
+  const windState =
+    weather && weather.windDirection != null
+      ? {
+          windDirection: weather.windDirection,
+          windTolerance: weather.windTolerance,
+          transition: weather.windTransition,
+        }
+      : null;
+  const dirIsActive = (runway, heading) => {
+    if (!windState) return true; // no weather => both ends drawn equally
+    const legal = activeLandingDirections(runway, windState);
+    return legal.some((d) => Math.abs(normalizeAngle(d - heading)) < 1e-3);
+  };
 
   for (const runway of map.runways) {
     // Both landing directions share one physical strip; draw cones for each.
     // The runway with a cleared aircraft gets a brighter "catch zone" cone so
-    // the active approach reads at a glance.
-    const isActive = active.has(runway.id);
-    drawApproachCone(ctx, runway, runway.heading, isActive);
-    drawApproachCone(ctx, runway, runway.heading + Math.PI, isActive);
+    // the active approach reads at a glance. A cone whose landing direction is
+    // not currently into the wind is dimmed (inactive end).
+    const cleared = active.has(runway.id);
+    const nearActive = dirIsActive(runway, runway.heading);
+    const farActive = dirIsActive(runway, runway.heading + Math.PI);
+    drawApproachCone(ctx, runway, runway.heading, cleared || nearActive, !nearActive);
+    drawApproachCone(ctx, runway, runway.heading + Math.PI, cleared || farActive, !farActive);
   }
 
   for (const runway of map.runways) {
@@ -211,6 +233,33 @@ export function drawAirport(ctx, map, activeIds, now = 0) {
     ctx.lineTo(thr.x + Math.cos(perp) * hw, thr.y + Math.sin(perp) * hw);
     ctx.stroke();
 
+    // FEAT-003: label the ACTIVE (into-wind) landing end(s) with the runway end
+    // name so the player can see which direction to land on. During a transition
+    // both ends are active and both get labels. The label sits just outside the
+    // threshold, back along the approach (where inbound traffic sees it).
+    const nearActive = dirIsActive(runway, runway.heading);
+    const farActive = dirIsActive(runway, runway.heading + Math.PI);
+    ctx.save();
+    ctx.font = 'bold 8px "Courier New", monospace';
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(255, 214, 70, 0.95)";
+    const labelOffset = runway.width + 10;
+    if (nearActive) {
+      const lx = thr.x - Math.cos(runway.heading) * labelOffset;
+      const ly = thr.y - Math.sin(runway.heading) * labelOffset;
+      ctx.fillText(runwayEndLabel(runway, runway.heading), lx, ly);
+    }
+    if (farActive) {
+      const fdir = normalizeAngle(runway.heading + Math.PI);
+      const fx = far.x - Math.cos(fdir) * labelOffset;
+      const fy = far.y - Math.sin(fdir) * labelOffset;
+      ctx.fillText(runwayEndLabel(runway, fdir), fx, fy);
+    }
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.restore();
+
     // Edge lights: a row at each end. Red when occupied, green when clear — the
     // literal "runway lights turn red" cue.
     const lightColor = occupied ? "rgba(255, 59, 48, 0.95)" : "rgba(57, 255, 20, 0.9)";
@@ -264,7 +313,9 @@ export function drawAirport(ctx, map, activeIds, now = 0) {
  * the runway heading and the approach snaps and locks. An `active` cone (a
  * plane already cleared into this runway) is drawn brighter.
  */
-function drawApproachCone(ctx, runway, direction, active = false) {
+function drawApproachCone(ctx, runway, direction, active = false, dim = false) {
+  ctx.save();
+  if (dim) ctx.globalAlpha = 0.28; // inactive (down-wind) end reads faint
   const thr = {
     x: runway.x - Math.cos(direction) * (runway.length / 2),
     y: runway.y - Math.sin(direction) * (runway.length / 2),
@@ -309,6 +360,7 @@ function drawApproachCone(ctx, runway, direction, active = false) {
   ctx.lineTo(ex2, ey2);
   ctx.stroke();
   ctx.setLineDash([]);
+  ctx.restore();
 }
 
 /**

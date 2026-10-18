@@ -42,6 +42,66 @@ export function isApproachDirectionValid(landingHeading, windDirection, toleranc
   return angleDifference(landingHeading, ideal) <= tolerance;
 }
 
+/**
+ * The currently-legal LANDING DIRECTIONS (travel headings on rollout) for a
+ * runway under a wind state. At steady state exactly ONE of a runway's two ends
+ * is into the wind and therefore legal. During a wind-shift transition window
+ * BOTH the end that is into the CURRENT wind and the end that was into the
+ * PREVIOUS wind are legal, so the player can keep routing to the old end while
+ * the shift settles.
+ *
+ * The runway is bidirectional: its two candidate landing headings are
+ * `runway.heading` and its reciprocal. A heading is legal when it is into the
+ * current wind (isApproachDirectionValid vs windDirection) OR, during an active
+ * transition, into the previous wind (vs windPrevDirection).
+ *
+ * Pure function. `windState` is a plain snapshot:
+ *   { windDirection, windTolerance?, transition?: { active, fromDirection } }
+ * `fromDirection` is the PREVIOUS wind direction (blowing-toward heading).
+ *
+ * @param {object} runway runway with a base `heading`
+ * @param {object} windState wind snapshot
+ * @returns {number[]} normalized legal landing headings (0, 1 or 2 entries)
+ */
+export function activeLandingDirections(runway, windState) {
+  if (!runway || !windState || windState.windDirection == null) return [];
+  const tol = windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
+  const transition = windState.transition;
+  const prevDir =
+    transition && transition.active && transition.fromDirection != null
+      ? transition.fromDirection
+      : null;
+  const ends = [normalizeAngle(runway.heading), normalizeAngle(runway.heading + Math.PI)];
+  const out = [];
+  for (const dir of ends) {
+    const intoCurrent = isApproachDirectionValid(dir, windState.windDirection, tol);
+    const intoPrev = prevDir != null && isApproachDirectionValid(dir, prevDir, tol);
+    if (intoCurrent || intoPrev) out.push(dir);
+  }
+  return out;
+}
+
+/**
+ * Whether a resolved landing direction is legal for a runway under a wind state,
+ * accounting for the transition window (legal if into the current wind OR, during
+ * a transition, into the previous wind). Thin wrapper over
+ * activeLandingDirections using an angular match. Pure function.
+ *
+ * @param {number} landingHeading travel heading on rollout
+ * @param {object} windState wind snapshot (see activeLandingDirections)
+ * @param {number} [tol] half-angle window (defaults to windState.windTolerance)
+ */
+export function isLandingDirectionLegal(landingHeading, windState, tol) {
+  if (landingHeading == null || !windState || windState.windDirection == null) return true;
+  const tolerance = tol ?? windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
+  if (isApproachDirectionValid(landingHeading, windState.windDirection, tolerance)) return true;
+  const transition = windState.transition;
+  if (transition && transition.active && transition.fromDirection != null) {
+    if (isApproachDirectionValid(landingHeading, transition.fromDirection, tolerance)) return true;
+  }
+  return false;
+}
+
 // --- Thunderstorm cells ----------------------------------------------------
 
 /**
@@ -165,6 +225,10 @@ export const WEATHER_DEFAULTS = Object.freeze({
   fogMaxInterval: 110,
   fogDuration: [25, 50],
   windTolerance: Math.PI / 2,
+  // Length (s of sim time) of the transition window opened on a wind shift,
+  // during which BOTH the old and new into-wind ends remain routable so the
+  // player can adapt before the old end becomes illegal.
+  windTransitionSeconds: 8,
 });
 
 /**
@@ -188,6 +252,11 @@ export function createWeatherController(opts = {}) {
     // (heading 0, landing toward +x) is valid: wind blowing toward -x (west).
     windDirection: Math.PI,
     windTolerance: cfg.windTolerance,
+    // Wind-shift transition window. When a shift occurs we record the previous
+    // wind direction and open a timer; while the timer is active BOTH the old
+    // and new into-wind ends are routable. After it elapses only the new end is.
+    windPrevDirection: null,
+    windTransition: { active: false, fromDirection: null, toDirection: null, remaining: 0 },
     storms: [],
     fogIntensity: 0,
     _nextStormId: 1,
@@ -203,13 +272,41 @@ export function createWeatherController(opts = {}) {
     return rng ? rng.range(a, b) : (a + b) / 2;
   }
 
-  /** Rotate the wind so the opposite approach becomes the valid one. */
+  /**
+   * Rotate the wind so the opposite approach becomes the valid one, and OPEN a
+   * transition window during which BOTH the old and new into-wind ends stay
+   * routable. The previous wind direction is recorded so landing legality and
+   * the direction indicator can treat both ends as active until the window
+   * closes.
+   */
   function shiftWind() {
     // Flip ~180 degrees with a little scatter so it reads as a real crosswind
     // reversal but stays within the new opposite window.
     const jitter = rng ? rng.range(-0.3, 0.3) : 0;
+    const prev = state.windDirection;
     state.windDirection = normalizeAngle(state.windDirection + Math.PI + jitter);
+    state.windPrevDirection = prev;
+    state.windTransition = {
+      active: true,
+      fromDirection: prev,
+      toDirection: state.windDirection,
+      remaining: cfg.windTransitionSeconds,
+    };
     return state.windDirection;
+  }
+
+  /** Current wind snapshot shape consumed by the pure direction helpers. */
+  function windStateSnapshot() {
+    return {
+      windDirection: state.windDirection,
+      windTolerance: state.windTolerance,
+      transition: {
+        active: state.windTransition.active,
+        fromDirection: state.windTransition.fromDirection,
+        toDirection: state.windTransition.toDirection,
+        remaining: state.windTransition.remaining,
+      },
+    };
   }
 
   /** Spawn a storm cell drifting across the field from a random edge. */
@@ -268,7 +365,25 @@ export function createWeatherController(opts = {}) {
     if (windTimer <= 0) {
       windTimer = randRange(cfg.windShiftMinInterval, cfg.windShiftMaxInterval);
       shiftWind();
-      events.push({ type: "wind", windDirection: state.windDirection });
+      events.push({
+        type: "wind",
+        windDirection: state.windDirection,
+        transition: true,
+        fromDirection: state.windTransition.fromDirection,
+      });
+    }
+
+    // Advance the transition window; close it (only the new end stays legal)
+    // when the timer elapses.
+    if (state.windTransition.active) {
+      state.windTransition.remaining -= dt;
+      if (state.windTransition.remaining <= 0) {
+        state.windTransition.active = false;
+        state.windTransition.remaining = 0;
+        state.windTransition.fromDirection = null;
+        state.windPrevDirection = null;
+        events.push({ type: "windTransitionEnd", windDirection: state.windDirection });
+      }
     }
 
     // Storm spawn schedule (respect the cap).
@@ -310,11 +425,15 @@ export function createWeatherController(opts = {}) {
     // Expose the schedulers for tests / manual triggering.
     shiftWind,
     spawnStorm,
+    windStateSnapshot,
     get storms() {
       return state.storms;
     },
     get windDirection() {
       return state.windDirection;
+    },
+    get windTransition() {
+      return state.windTransition;
     },
     get fogIntensity() {
       return state.fogIntensity;
