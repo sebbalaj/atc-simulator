@@ -21,6 +21,20 @@ import { normalizeAngle, angleDifference } from "./airport.js";
 // --- Wind -----------------------------------------------------------------
 
 /**
+ * Read the wind-shift transition descriptor off a wind snapshot, accepting
+ * EITHER canonical field name. Pure-helper unit tests and the render snapshot
+ * use `transition`; the live `game.weather` object published by weatherSystem
+ * uses `windTransition`. Both gameplay call sites (snapToLanding, windAllows)
+ * hand `game.weather` straight through, so the helpers must understand both
+ * shapes or the transition window silently never fires in-game. Returns the
+ * descriptor ({ active, fromDirection, ... }) or null.
+ */
+function readTransition(windState) {
+  if (!windState) return null;
+  return windState.transition ?? windState.windTransition ?? null;
+}
+
+/**
  * Whether a resolved landing direction is valid for the current wind. Aircraft
  * must land into the wind, so the legal approach direction is the one pointing
  * OPPOSITE the wind's "blowing toward" heading, within a tolerance. A wind shift
@@ -57,8 +71,10 @@ export function isApproachDirectionValid(landingHeading, windDirection, toleranc
  * transition, into the previous wind (vs windPrevDirection).
  *
  * Pure function. `windState` is a plain snapshot:
- *   { windDirection, windTolerance?, transition?: { active, fromDirection } }
- * `fromDirection` is the PREVIOUS wind direction (blowing-toward heading).
+ *   { windDirection, windTolerance?, transition?|windTransition?: { active, fromDirection } }
+ * The transition descriptor may be named `transition` (pure-helper tests / the
+ * render snapshot) OR `windTransition` (the live game.weather object); both are
+ * accepted. `fromDirection` is the PREVIOUS wind direction (blowing-toward).
  *
  * @param {object} runway runway with a base `heading`
  * @param {object} windState wind snapshot
@@ -67,7 +83,7 @@ export function isApproachDirectionValid(landingHeading, windDirection, toleranc
 export function activeLandingDirections(runway, windState) {
   if (!runway || !windState || windState.windDirection == null) return [];
   const tol = windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
-  const transition = windState.transition;
+  const transition = readTransition(windState);
   const prevDir =
     transition && transition.active && transition.fromDirection != null
       ? transition.fromDirection
@@ -96,7 +112,7 @@ export function isLandingDirectionLegal(landingHeading, windState, tol) {
   if (landingHeading == null || !windState || windState.windDirection == null) return true;
   const tolerance = tol ?? windState.windTolerance ?? WEATHER_DEFAULTS.windTolerance;
   if (isApproachDirectionValid(landingHeading, windState.windDirection, tolerance)) return true;
-  const transition = windState.transition;
+  const transition = readTransition(windState);
   if (transition && transition.active && transition.fromDirection != null) {
     if (isApproachDirectionValid(landingHeading, transition.fromDirection, tolerance)) return true;
   }

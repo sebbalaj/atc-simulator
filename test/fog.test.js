@@ -21,6 +21,45 @@ import {
 } from "../src/game/weather.js";
 import { createRng } from "../src/core/rng.js";
 import { createFlightStrips } from "../src/ui/flightStrips.js";
+import { createWorld } from "../src/ecs/world.js";
+import { Components } from "../src/ecs/components.js";
+import { drawAircraft } from "../src/ecs/systems/renderSystem.js";
+import { getAircraftDef, AircraftKind } from "../src/game/aircraft.js";
+
+// A no-op Canvas 2D context recorder good enough for drawAircraft: every draw
+// method is a no-op, and style props are settable. drawAircraft only needs the
+// geometry calls to be harmless; we assert on component state, not pixels.
+function makeMockCtx() {
+  const noop = () => {};
+  const ctx = {
+    save: noop,
+    restore: noop,
+    translate: noop,
+    rotate: noop,
+    beginPath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    arc: noop,
+    fill: noop,
+    stroke: noop,
+    fillRect: noop,
+    clearRect: noop,
+    fillText: noop,
+    strokeText: noop,
+    setLineDash: noop,
+    createLinearGradient: () => ({ addColorStop: noop }),
+    fillStyle: null,
+    strokeStyle: null,
+    lineWidth: 1,
+    lineCap: "butt",
+    lineJoin: "miter",
+    globalAlpha: 1,
+    font: "",
+    textAlign: "left",
+    textBaseline: "alphabetic",
+  };
+  return ctx;
+}
 
 // --- isPointInFog ---------------------------------------------------------
 
@@ -112,6 +151,49 @@ test("weather controller spawns a drifting fog bank on the fog schedule", () => 
   const y0 = bank.y;
   wc.update(1);
   assert.ok(bank.x !== x0 || bank.y !== y0, "bank drifted after an update");
+});
+
+// --- stale Render.fogHidden for a never-swept plane -----------------------
+//
+// drawAircraft returns early on `!render.seen` (a plane the radar beam has not
+// yet painted is not drawn). The fix clears Render.fogHidden BEFORE that gate so
+// a never-swept plane cannot keep a stale `fogHidden` flag that would briefly
+// mis-grey its flight strip. Revert-sensitive: if the clear is removed (or
+// placed after the early return) the stale `true` survives and this fails.
+
+test("drawAircraft clears a stale Render.fogHidden on a never-swept plane", () => {
+  const game = {
+    world: createWorld(),
+    map: { center: { x: 200, y: 300 } },
+    width: 400,
+    height: 600,
+    time: 100,
+    selectedId: null,
+    sweep: 0,
+    // No fog banks: even so, the never-swept plane must END at fogHidden=false.
+    weather: { fog: { banks: [], active: false }, ilsOwned: false },
+  };
+  const { world } = game;
+  const def = getAircraftDef(AircraftKind.LIGHT);
+  const id = world.createEntity();
+  world.addComponent(id, Components.Transform, { x: 50, y: 50, heading: 0 });
+  world.addComponent(id, Components.Aircraft, { kind: AircraftKind.LIGHT, state: "inbound" });
+  // Never swept (seen:false) but carrying a STALE fogHidden=true from a prior
+  // position/frame.
+  world.addComponent(id, Components.Render, {
+    color: def.color,
+    size: def.size,
+    seen: false,
+    fogHidden: true,
+  });
+
+  const render = world.getComponent(id, Components.Render);
+  assert.equal(render.fogHidden, true, "precondition: stale fogHidden set");
+
+  drawAircraft(makeMockCtx(), world, game, 0);
+
+  assert.equal(render.seen, false, "plane is still unseen (beam at bearing 0 did not reach it this frame)");
+  assert.equal(render.fogHidden, false, "stale fogHidden cleared before the seen gate (no grey strip)");
 });
 
 // --- select = communicate (no camera move) --------------------------------

@@ -218,6 +218,82 @@ test("a NEW routing attempt to the now-illegal (down-wind) end does NOT clear", 
   assert.equal(ac.clearance, null, "no clearance on the aircraft for the illegal end");
 });
 
+// --- (f) ECS/snap-level transition window with a game.weather-shaped object --
+//
+// Revert-sensitive: this drives finalizePath / the landing-system fallback with
+// a LIVE game.weather object whose transition descriptor is named
+// `windTransition` (exactly as weatherSystem publishes it), NOT the
+// `transition`-shaped snapshot the pure-helper tests feed. It asserts the OLD
+// into-wind end is routable DURING an active transition window and NOT routable
+// after it closes. Against the old field-name mismatch (helpers read only
+// `windState.transition`) the OLD end would be rejected during the window, so
+// this case FAILS pre-fix and PASSES post-fix.
+
+test("ECS/snap: during an ACTIVE transition the OLD into-wind end is routable via game.weather.windTransition", () => {
+  const game = makeGame();
+  // Steady state before the shift: wind blows west (PI) => legal landing = east
+  // (0). Then the wind flips to blow east (0) => new legal landing = west (PI),
+  // but a transition window keeps the OLD east (0) end routable briefly.
+  game.weather.windDirection = 0; // now blows east => new legal end = west (PI)
+  game.weather.windPrevDirection = Math.PI; // previous wind blew west
+  game.weather.windTransition = {
+    active: true,
+    fromDirection: Math.PI, // into-wind end for the PREVIOUS wind = east (0)
+    toDirection: 0,
+    remaining: 8,
+  };
+
+  // Sanity on the pure legality using the LIVE object shape: the OLD east end
+  // (heading 0) must be legal ONLY because the transition is honored.
+  assert.ok(
+    isLandingDirectionLegal(0, game.weather),
+    "OLD into-wind end (east/0) is legal during the transition window (game.weather shape)"
+  );
+
+  const runway = game.map.runways.find((r) => Math.abs(normalizeAngle(r.heading)) < 1e-6) || game.map.runways[0];
+  const thr = runwayThreshold({ ...runway, heading: 0 });
+  const startX = thr.x - Math.cos(0) * 24;
+  const startY = thr.y - Math.sin(0) * 24;
+  const def = getAircraftDef(AircraftKind.LIGHT);
+  const route = [
+    { x: startX, y: startY },
+    { x: thr.x, y: thr.y },
+  ];
+  const heading = approachHeadingFromPath(route);
+
+  // Snap layer: a route into the OLD east end clears during the window.
+  const snapped = snapToLanding(game.map, route, heading, def, null, game.weather);
+  assert.ok(snapped.locked, "route to the OLD end clears DURING the transition window");
+  assert.ok(
+    snapped.clearance && snapped.clearance.surface === "runway",
+    "runway clearance recorded for the OLD end during the window"
+  );
+  assert.ok(
+    Math.abs(normalizeAngle(snapped.clearance.heading - 0)) < 1e-3,
+    "the cleared direction is the OLD east end (heading 0)"
+  );
+
+  // ECS input layer: finalizePath records the clearance too.
+  const id = spawnInbound(game, AircraftKind.LIGHT, startX, startY, 0);
+  finalizePath(game, id, route);
+  const ac = game.world.getComponent(id, Components.Aircraft);
+  const path = game.world.getComponent(id, Components.Path);
+  assert.ok(path.locked, "finalizePath locked the OLD-end clearance during the window");
+  assert.ok(ac.clearance && ac.clearance.surface === "runway", "clearance set on the aircraft during the window");
+
+  // Now CLOSE the transition window: the OLD east end must become illegal for a
+  // fresh route, while the NEW west end stays legal.
+  game.weather.windPrevDirection = null;
+  game.weather.windTransition = { active: false, fromDirection: null, toDirection: null, remaining: 0 };
+  assert.ok(
+    !isLandingDirectionLegal(0, game.weather),
+    "OLD east end is illegal AFTER the window closes (game.weather shape)"
+  );
+  const snappedAfter = snapToLanding(game.map, route, heading, def, null, game.weather);
+  assert.ok(!snappedAfter.locked, "a NEW route to the OLD end does NOT clear after the window closes");
+  assert.equal(snappedAfter.clearance, null, "no clearance for the OLD end after the window closes");
+});
+
 // --- Sanity: the pure helper agrees with isApproachDirectionValid ------------
 
 test("isLandingDirectionLegal with no transition matches isApproachDirectionValid", () => {

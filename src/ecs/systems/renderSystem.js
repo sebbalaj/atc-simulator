@@ -597,8 +597,14 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
 
     // Never-swept new spawns are not drawn until the beam first reaches them,
     // so the player genuinely acts on swept information. Important planes are
-    // force-latched above and so are always `seen`.
-    if (!render.seen) continue;
+    // force-latched above and so are always `seen`. Clear fogHidden BEFORE the
+    // seen gate: a plane that has not yet been painted by the beam has no
+    // displayed blip to conceal, so its strip must not inherit a stale
+    // fog-hidden (grey) flag from a previous frame/position.
+    if (!render.seen) {
+      render.fogHidden = false;
+      continue;
+    }
 
     // Displayed blip position/heading is the LAST-SWEPT value, not the live one.
     // A selected plane is force-latched to its LIVE position above (force=true
