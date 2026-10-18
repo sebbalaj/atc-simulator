@@ -20,8 +20,9 @@ import {
   pathCrossesStorm,
   segmentIntersectsCircle,
   isApproachDirectionValid,
-  fogVisibilityRange,
-  fogAlphaForDistance,
+  createFogBank,
+  isPointInFog,
+  fogConceals,
   createWeatherController,
 } from "../src/game/weather.js";
 import {
@@ -133,18 +134,22 @@ test("weather controller shiftWind reverses the valid approach", () => {
   assert.notEqual(valid1, valid2, "a wind shift flips validity of the same approach");
 });
 
-// --- Fog ------------------------------------------------------------------
+// --- Fog (moving region) --------------------------------------------------
+// FEAT-004 replaced the old global visibility-shrink fog (fogVisibilityRange /
+// fogAlphaForDistance) with a MOVING FOG REGION that conceals only the area it
+// covers. These assertions cover the new region model; the point-in-fog / drift
+// / conceal-override behavior is exercised in full in test/fog.test.js.
 
-test("fog reduces visibility range, ILS restores it", () => {
-  const full = 400;
-  assert.equal(fogVisibilityRange(0, full), full, "no fog = full range");
-  assert.ok(fogVisibilityRange(1, full) < full, "full fog shrinks the range");
-  assert.equal(fogVisibilityRange(1, full, true), full, "ILS owned keeps full range");
+test("fog region conceals only the area it covers; ILS/selected override", () => {
+  const bank = createFogBank({ x: 0, y: 0, hx: 100, hy: 60, radius: 20 });
+  assert.equal(isPointInFog(bank, 0, 0), true, "center is inside");
+  assert.equal(isPointInFog(bank, 500, 500), false, "far point is outside");
 
-  // A plane beyond the fog range fades out; one inside is fully visible.
-  const range = fogVisibilityRange(1, full);
-  assert.equal(fogAlphaForDistance(range - 10, range), 1, "inside range fully visible");
-  assert.ok(fogAlphaForDistance(range + 1000, range) < 1, "far beyond range faded");
+  // A plane inside the bank is concealed unless ILS-equipped or selected.
+  assert.equal(fogConceals(bank, 0, 0, {}), true, "in-fog plane hidden");
+  assert.equal(fogConceals(bank, 0, 0, { selected: true }), false, "selected = visible");
+  assert.equal(fogConceals(bank, 0, 0, { ilsOwned: true }), false, "ILS = visible");
+  assert.equal(fogConceals(bank, 500, 500, {}), false, "out-of-fog plane visible");
 });
 
 // --- Mayday ---------------------------------------------------------------

@@ -1,8 +1,9 @@
 // Flight strips: the scrollable list in the bottom console, one strip per active
 // aircraft. Each strip shows the callsign/ID, class, a live altitude readout
 // (derived/animated from how long the plane has been inbound) and a fuel status
-// bar. Tapping a strip selects that aircraft and centers the camera on it (the
-// render system reads game.camera.target).
+// bar. Tapping a strip selects (COMMUNICATES with) that aircraft: the render
+// layer reveals its live position (even through fog) and highlights the surface
+// it must land on. The camera does NOT move (the view stays put).
 //
 // Browser-coupled (creates DOM), but constructed only from console.js at start,
 // so the pure modules it imports still load under Node. Strips are added on
@@ -62,7 +63,7 @@ export function createFlightStrips(container, game) {
     el.appendChild(head);
     el.appendChild(fuelBar);
 
-    // Tap/click selects the aircraft and centers the camera on it.
+    // Tap/click selects (communicates with) the aircraft. No camera move.
     el.addEventListener("click", () => select(id));
 
     container.appendChild(el);
@@ -76,25 +77,25 @@ export function createFlightStrips(container, game) {
     strips.delete(id);
     if (game.selectedId === id) {
       game.selectedId = null;
-      if (game.camera) game.camera.target = null;
-    }
-  }
-
-  /** Select an aircraft: highlight its strip and center the camera on it. */
-  function select(id) {
-    if (!world.hasEntity || !world.hasEntity(id)) return;
-    game.selectedId = id;
-    const t = world.getComponent(id, Components.Transform);
-    if (t && game.camera) {
-      game.camera.target = { x: t.x, y: t.y };
-      game.camera.followId = id;
     }
   }
 
   /**
+   * Select (COMMUNICATE with) an aircraft: highlight its strip and emit
+   * 'aircraft:selected'. This reveals the plane's live position through fog and
+   * highlights its assigned surface in the render layer. It does NOT move or
+   * recenter the camera — the view stays put.
+   */
+  function select(id) {
+    if (!world.hasEntity || !world.hasEntity(id)) return;
+    const wasSelected = game.selectedId === id;
+    game.selectedId = id;
+    if (!wasSelected && game.bus) game.bus.emit("aircraft:selected", { id });
+  }
+
+  /**
    * Refresh every strip's live data (altitude readout + fuel bar) and the
-   * selected-strip highlight. Also keeps the camera target tracking a followed
-   * plane. Called from console.update() each render.
+   * selected-strip highlight. Called from console.update() each render.
    */
   function refresh() {
     for (const [id, strip] of strips) {
@@ -116,18 +117,6 @@ export function createFlightStrips(container, game) {
       }
 
       strip.el.classList.toggle("selected", game.selectedId === id);
-    }
-
-    // Keep the camera centered on the followed plane as it moves.
-    if (game.camera && game.camera.followId != null) {
-      const fid = game.camera.followId;
-      if (world.hasEntity(fid)) {
-        const t = world.getComponent(fid, Components.Transform);
-        if (t) game.camera.target = { x: t.x, y: t.y };
-      } else {
-        game.camera.followId = null;
-        game.camera.target = null;
-      }
     }
   }
 

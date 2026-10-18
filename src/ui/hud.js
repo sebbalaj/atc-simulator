@@ -7,18 +7,19 @@
 //   - drawProximityAlarm: a screen-edge red vignette whose intensity tracks the
 //     closest separation (the audible alarm is wired separately in FEAT-006).
 //   - drawEventBanner: a top banner for transient event messages.
-//   - applyCamera / clearCamera: center the view on the selected plane.
+//   - drawFog: the drifting fog bank region(s) (world space).
+//   - applyCamera: identity transform (the view stays put; no center-on-select).
 
 import { Components } from "../ecs/components.js";
 import { getAircraftDef } from "../game/aircraft.js";
 import { fuelStatus } from "../game/fuel.js";
-import { fogAlphaForDistance } from "../game/weather.js";
 import { EmergencyType } from "../game/emergencies.js";
 
 /**
- * Apply the camera transform (translate so camera.target is centered). Call
- * after ctx.save(); pair with a ctx.restore(). No-op if there is no target.
- * Returns the applied offset for hit-testing callers that need it.
+ * Apply the camera transform (translate so camera.target is centered). FEAT-004
+ * keeps the view STATIC: camera.target is always null, so this is the identity
+ * transform (no pan). Retained as a no-op + for a possible future panning camera.
+ * Call after ctx.save(); pair with a ctx.restore(). Returns the applied offset.
  */
 export function applyCamera(ctx, camera, width, height) {
   if (!camera || !camera.target) return { x: 0, y: 0 };
@@ -136,32 +137,55 @@ export function drawHospital(ctx, hospital) {
 }
 
 /**
- * Dim aircraft that are outside the fog visibility range so planes only draw
- * when close. Returns a function used by drawAircraft; here we expose a helper
- * to compute an aircraft's fog alpha so the render system can apply it. When
- * there is no fog (intensity ~0) this returns 1 for everything.
+ * Draw the drifting fog bank(s) as translucent rounded-rect regions over the
+ * area each covers (WORLD space, so they pan/latch with the field). This is the
+ * visible extent of the radar-blocking fog region; the concealment decision for
+ * individual planes is made by fogConceals() in the render layer. Takes the
+ * published fog snapshot (game.weather.fog = {banks, active}).
  */
-export function aircraftFogAlpha(weather, map, x, y) {
-  if (!weather || !map || !(weather.fogIntensity > 0.01)) return 1;
-  if (weather.ilsOwned) return 1;
-  const d = Math.hypot(x - map.center.x, y - map.center.y);
-  return fogAlphaForDistance(d, weather.fogVisibility ?? Infinity);
+export function drawFog(ctx, fog) {
+  if (!fog || !fog.banks || fog.banks.length === 0) return;
+  ctx.save();
+  for (const bank of fog.banks) {
+    const r = Math.max(0, bank.radius || 0);
+    const w = bank.hx * 2;
+    const h = bank.hy * 2;
+    const x0 = bank.x - bank.hx;
+    const y0 = bank.y - bank.hy;
+    // A soft radial fill so the bank reads as a cloud rather than a hard box.
+    const grad = ctx.createRadialGradient(
+      bank.x, bank.y, Math.min(bank.hx, bank.hy) * 0.2,
+      bank.x, bank.y, Math.max(bank.hx, bank.hy)
+    );
+    grad.addColorStop(0, "rgba(205,212,218,0.42)");
+    grad.addColorStop(0.75, "rgba(198,206,214,0.34)");
+    grad.addColorStop(1, "rgba(198,206,214,0.06)");
+    ctx.fillStyle = grad;
+    roundedRectPath(ctx, x0, y0, w, h, r);
+    ctx.fill();
+    // Faint outline so the blocked area's edge is legible.
+    ctx.strokeStyle = "rgba(220,228,235,0.35)";
+    ctx.lineWidth = 1.5;
+    roundedRectPath(ctx, x0, y0, w, h, r);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
-/** Paint a fog vignette over the whole radar (screen space). */
-export function drawFog(ctx, width, height, intensity) {
-  if (!(intensity > 0.01)) return;
-  const a = Math.min(0.55, 0.15 + intensity * 0.5);
-  const grad = ctx.createRadialGradient(
-    width / 2, height / 2, Math.min(width, height) * 0.12,
-    width / 2, height / 2, Math.max(width, height) * 0.6
-  );
-  grad.addColorStop(0, `rgba(200,210,215,${a * 0.3})`);
-  grad.addColorStop(1, `rgba(200,210,215,${a})`);
-  ctx.save();
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, width, height);
-  ctx.restore();
+/** Trace a rounded-rectangle path (no fill/stroke). Pure-ish ctx helper. */
+function roundedRectPath(ctx, x, y, w, h, r) {
+  const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.lineTo(x + w - rr, y);
+  ctx.arcTo(x + w, y, x + w, y + rr, rr);
+  ctx.lineTo(x + w, y + h - rr);
+  ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+  ctx.lineTo(x + rr, y + h);
+  ctx.arcTo(x, y + h, x, y + h - rr, rr);
+  ctx.lineTo(x, y + rr);
+  ctx.arcTo(x, y, x + rr, y, rr);
+  ctx.closePath();
 }
 
 /** Draw a wind-direction arrow + label in the top-left corner (screen space). */

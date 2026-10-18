@@ -7,7 +7,8 @@
 //     reputation like a fuel-out and emits 'aircraft:stormloss'.
 //   - wind: the current wind state is exposed on game.weather for landingSystem
 //     to validate approach directions against.
-//   - fog: the fog intensity/visibility range is exposed for renderSystem.
+//   - fog: drifting fog region(s) are exposed on game.weather.fog for the render
+//     layer, which conceals only planes inside a bank (display-only).
 // It emits HUD banner events ('weather:wind', 'weather:storm', 'weather:fog')
 // as weather changes occur.
 
@@ -16,7 +17,6 @@ import {
   createWeatherController,
   pointInAnyStorm,
   pathCrossesStorm,
-  fogVisibilityRange,
 } from "../../game/weather.js";
 
 /** Build the ECS weather system bound to a game instance. */
@@ -44,14 +44,12 @@ export function createWeatherSystem(game) {
       remaining: controller.state.windTransition.remaining,
     },
     storms: controller.state.storms,
-    fogIntensity: 0,
-    fogVisibility: Infinity,
+    // Moving fog region(s). `banks` is the list of drifting rounded-rect banks
+    // that conceal the part of the scope they cover; `active` is true while any
+    // bank exists. Render/HUD read these; concealment is display-only.
+    fog: { banks: controller.state.fogBanks, active: controller.state.fogBanks.length > 0 },
     ilsOwned: game.ilsOwned ?? false, // FEAT-005 will flip this on purchase
   };
-
-  function fullRange() {
-    return Math.max(map.width, map.height) * 0.6;
-  }
 
   const system = function weatherSystem(dt) {
     if (game.gameOver) return;
@@ -68,14 +66,12 @@ export function createWeatherSystem(game) {
       remaining: controller.state.windTransition.remaining,
     };
     game.weather.storms = controller.state.storms;
-    game.weather.fogIntensity = controller.state.fogIntensity;
+    game.weather.fog = {
+      banks: controller.state.fogBanks,
+      active: controller.state.fogBanks.length > 0,
+    };
     // The ILS flag is owned by FEAT-005; read it fresh each tick (default false).
     game.weather.ilsOwned = game.ilsOwned ?? false;
-    game.weather.fogVisibility = fogVisibilityRange(
-      controller.state.fogIntensity,
-      fullRange(),
-      game.weather.ilsOwned
-    );
 
     // Announce changes via banners / events.
     for (const ev of events) {
@@ -89,7 +85,7 @@ export function createWeatherSystem(game) {
         bus.emit("weather:storm", { cell: ev.cell });
       } else if (ev.type === "fog") {
         if (ev.on) {
-          game.flashBanner && game.flashBanner("FOG - VISIBILITY REDUCED");
+          game.flashBanner && game.flashBanner("FOG BANK - RADAR BLOCKED IN AREA");
           bus.emit("weather:fog", { on: true });
         } else {
           bus.emit("weather:fog", { on: false });

@@ -8,7 +8,7 @@
 import { Components } from "../components.js";
 import { getAircraftDef } from "../../game/aircraft.js";
 import { runwayThreshold, runwayFarEnd, runwayEndLabel, normalizeAngle } from "../../game/airport.js";
-import { activeLandingDirections } from "../../game/weather.js";
+import { activeLandingDirections, fogConceals } from "../../game/weather.js";
 import { updateSweepDisplay, sweepPeriod } from "../../game/radar.js";
 import {
   applyCamera,
@@ -20,7 +20,6 @@ import {
   drawFog,
   drawWindIndicator,
   drawEmergencyFlash,
-  aircraftFogAlpha,
 } from "../../ui/hud.js";
 
 // Separation at/under which the proximity alarm vignette begins. Matches the
@@ -41,7 +40,15 @@ export function createRenderSystem(game) {
     // can be centered on screen. With no camera target this is the identity.
     ctx.save();
     applyCamera(ctx, game.camera, width, height);
-    drawAirport(ctx, game.map, activeRunwayIds(world), game.time, game.weather);
+    drawAirport(
+      ctx,
+      game.map,
+      activeRunwayIds(world),
+      game.time,
+      game.weather,
+      selectedAssignment(world, game.selectedId),
+      blinkOn
+    );
     if (game.map) drawHospital(ctx, game.map.hospital);
     drawPaths(ctx, world, blinkOn);
     // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
@@ -53,10 +60,12 @@ export function createRenderSystem(game) {
     drawAircraft(ctx, world, game, blinkPhase);
     drawEmergencyFlash(ctx, world, blinkOn);
     drawLowFuelGauges(ctx, world, blinkOn);
+    // Fog bank(s): a drifting region that conceals only the area it covers.
+    // Drawn in WORLD space (banks carry world coords) over the aircraft so the
+    // blocked part of the scope reads as clouded over. Concealment of individual
+    // blips happens inside drawAircraft (fogConceals + '?' glyph).
+    if (game.weather) drawFog(ctx, game.weather.fog);
     ctx.restore();
-
-    // Fog dims the whole field (screen space, over the world).
-    if (game.weather) drawFog(ctx, width, height, game.weather.fogIntensity);
 
     // Screen-space overlays.
     if (game.weather) drawWindIndicator(ctx, game.weather);
@@ -135,12 +144,27 @@ function activeRunwayIds(world) {
 }
 
 /**
+ * The landing assignment of the currently-selected aircraft, so the render layer
+ * can emphasize the runway/pad the player is being asked to land it on when they
+ * select (communicate with) it. Returns the Aircraft.assignment or null.
+ */
+function selectedAssignment(world, selectedId) {
+  if (selectedId == null || !world.hasEntity || !world.hasEntity(selectedId)) return null;
+  const ac = world.getComponent(selectedId, Components.Aircraft);
+  return ac && ac.assignment ? ac.assignment : null;
+}
+
+/**
  * Draw runways, their approach cones, and the helipad. `now` is the current sim
  * time: a runway with `now < occupiedUntil` has just taken a landing and is
  * rendered RED ("occupied / clearing") until the ground crew clears it, when it
  * returns to its normal/green styling.
+ *
+ * `highlight` is the selected aircraft's assignment (FEAT-004 select=communicate):
+ * when set, the runway/pad the plane must land on gets an extra bright emphasis
+ * so the player can see where to route it. `blinkOn` pulses that emphasis.
  */
-export function drawAirport(ctx, map, activeIds, now = 0, weather = null) {
+export function drawAirport(ctx, map, activeIds, now = 0, weather = null, highlight = null, blinkOn = true) {
   if (!map) return;
   const active = activeIds || new Set();
 
@@ -304,6 +328,57 @@ export function drawAirport(ctx, map, activeIds, now = 0, weather = null) {
     ctx.fillText("H", pad.x, pad.y + 1);
     ctx.textAlign = "left";
     ctx.textBaseline = "alphabetic";
+  }
+
+  // FEAT-004: emphasize the surface the SELECTED plane is assigned to, so
+  // "communicating" with a plane shows where it needs to land. For a specific
+  // runway/pad draw a bright pulsing marker; for 'any' mode we deliberately draw
+  // NOTHING extra (the plane has no preference, so no single surface to point
+  // at) — the simpler, less-cluttered readable option.
+  if (highlight) drawAssignmentHighlight(ctx, map, highlight, blinkOn);
+}
+
+/**
+ * Draw an extra emphasis marker on the runway/pad named by a selected plane's
+ * assignment. A specific runway gets a bright pulsing centerline glow + end ring;
+ * a specific pad gets a pulsing ring. 'any' mode highlights nothing (no single
+ * surface to point at). Display-only.
+ */
+function drawAssignmentHighlight(ctx, map, assignment, blinkOn) {
+  const col = blinkOn ? "rgba(120, 230, 255, 0.95)" : "rgba(120, 230, 255, 0.4)";
+  if (assignment.kind === "runway" && assignment.runwayId != null) {
+    const runway = map.runways && map.runways.find((r) => r.id === assignment.runwayId);
+    if (!runway) return;
+    const thr = runwayThreshold(runway);
+    const far = runwayFarEnd(runway);
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(thr.x, thr.y);
+    ctx.lineTo(far.x, far.y);
+    ctx.stroke();
+    // End rings so the assigned strip pops.
+    for (const end of [thr, far]) {
+      ctx.beginPath();
+      ctx.arc(end.x, end.y, runway.width * 0.9 + 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
+  if (assignment.kind === "helipad") {
+    const pads = map.helipads && map.helipads.length ? map.helipads : map.helipad ? [map.helipad] : [];
+    const pad = assignment.padId != null ? pads.find((p) => p.id === assignment.padId) : map.helipad;
+    if (!pad) return;
+    ctx.save();
+    ctx.strokeStyle = col;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(pad.x, pad.y, pad.radius + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 }
 
@@ -472,7 +547,8 @@ const TRAIL_STEPS = 3; // short fading trail segments behind a fresh blip
  * between it holds the last-swept position and fades. The authoritative sim is
  * never consulted here beyond reading true positions to latch. Selected and
  * warning/emergency aircraft are force-latched every frame so a stale blip can
- * never hide an actionable conflict. Fog/ILS alpha multiplies the sweep alpha.
+ * never hide an actionable conflict. A plane inside a drifting fog bank (not ILS,
+ * not selected) is concealed and shown as a '?' at its last-known position.
  */
 export function drawAircraft(ctx, world, game, blinkPhase) {
   const blinkOn = blinkPhase === undefined ? true : blinkPhase < 0.5;
@@ -525,14 +601,27 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
     if (!render.seen) continue;
 
     // Displayed blip position/heading is the LAST-SWEPT value, not the live one.
+    // A selected plane is force-latched to its LIVE position above (force=true
+    // makes updateSweepDisplay latch the true x/y/heading every frame), so a
+    // communicated-with plane shows its live location even through fog + sweep.
     const dx = render.lastSweepX;
     const dy = render.lastSweepY;
     const dHeading = render.lastSweepHeading;
 
-    // Fog/ILS alpha is evaluated at the displayed (last-swept) position so it
-    // composes with the sweep gating rather than fighting it.
-    const fogAlpha = aircraftFogAlpha(game.weather, game.map, dx, dy);
-    if (fogAlpha <= 0.02) continue;
+    // Fog concealment (DISPLAY-ONLY): a plane inside a drifting fog bank is
+    // hidden on radar UNLESS it is ILS-equipped or the plane the player has
+    // selected/communicated-with. Evaluated at the displayed (last-swept)
+    // position so it composes with the sweep gating. When concealed we draw a
+    // '?' glyph at the last-known position and set Render.fogHidden (consumed by
+    // the flight strips in FEAT-006); otherwise we clear the flag.
+    const banks = game.weather && game.weather.fog ? game.weather.fog.banks : null;
+    const ilsOwned = !!(game.weather && game.weather.ilsOwned);
+    const concealed = fogConceals(banks, dx, dy, { selected, ilsOwned });
+    render.fogHidden = concealed;
+    if (concealed) {
+      drawFogQuestionMark(ctx, dx, dy);
+      continue;
+    }
 
     // Sweep fade: full alpha right after a sweep, decaying toward a floor as the
     // blip ages over one refresh period. Important planes stay at full alpha.
@@ -543,7 +632,7 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
       sweepAlpha = 1 - (1 - BLIP_FADE_FLOOR) * frac;
     }
 
-    const alpha = fogAlpha * sweepAlpha;
+    const alpha = sweepAlpha;
     if (alpha <= 0.02) continue;
 
     // Short fading trail from the previous display toward the fresh blip, so a
@@ -611,6 +700,33 @@ export function drawAircraft(ctx, world, game, blinkPhase) {
     }
     ctx.restore();
   }
+}
+
+/**
+ * Draw a '?' glyph at a fog-concealed plane's last-known / last-swept position.
+ * This is the only on-radar cue for a plane hidden inside a fog bank: its true
+ * position is still simulated, but the player sees only the unknown marker here.
+ */
+function drawFogQuestionMark(ctx, x, y) {
+  ctx.save();
+  ctx.globalAlpha = 0.85;
+  // Faint disc so the marker reads against the clouded area.
+  ctx.fillStyle = "rgba(170,180,188,0.25)";
+  ctx.beginPath();
+  ctx.arc(x, y, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(230,236,242,0.95)";
+  ctx.strokeStyle = "rgba(0,20,5,0.8)";
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = "round";
+  ctx.font = 'bold 13px "Courier New", monospace';
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.strokeText("?", x, y + 1);
+  ctx.fillText("?", x, y + 1);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.restore();
 }
 
 /** Dim overlay + message when the level ends. */

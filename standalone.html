@@ -2067,10 +2067,11 @@ body {
           //   THUNDERSTORM- opaque circular cells with a position, radius and drift
           //                 velocity. Each tick the cell drifts; a plane whose position
           //                 (or drawn route) intersects a cell is destroyed / loses nav.
-          //   FOG         - a visibility factor (0..1). The render system fades aircraft
-          //                 that are farther than the fog visibility range from the field,
-          //                 unless the ILS upgrade is owned (fogVisibilityRange reads an
-          //                 ILS-owned flag, default false until FEAT-005 sets it).
+          //   FOG         - a MOVING REGION (a drifting "bank") that conceals only the
+          //                 part of the scope it covers. A plane inside the bank is hidden
+          //                 on radar (shows a '?' at its last-known position) unless it is
+          //                 ILS-equipped or the player has selected/communicated with it.
+          //                 Concealment is DISPLAY-ONLY; the sim runs on true positions.
 
           const { normalizeAngle, angleDifference } = require("src/game/airport.js");
 
@@ -2233,37 +2234,97 @@ body {
             return Math.hypot(cell.x - cx, cell.y - cy) <= cell.radius;
           }
 
-          // --- Fog -------------------------------------------------------------------
+          // --- Fog (moving region / "bank") ------------------------------------------
+          //
+          // Fog is now a MOVING REGION rather than a global visibility shrink. A fog bank
+          // is a rounded-rectangle area (half-extents hx/hy, with a corner radius) that
+          // drifts across the field along a velocity. It conceals ONLY the part of the
+          // scope it covers: a plane inside the bank is hidden on radar (shows a '?' at
+          // its last-known position) unless it is ILS-equipped or the player has selected
+          // (is communicating with) it. Concealment is DISPLAY-ONLY; the sim always runs
+          // on true positions. All the geometry/decision logic here is pure so it can be
+          // unit-tested under Node.
 
           /**
-           * The visibility range (px) at a given fog intensity. 0 intensity = full
-           * visibility (a large range); as intensity rises the range shrinks so planes
-           * only draw when close. When ILS is owned the controller keeps full visibility
-           * regardless of fog. Pure function.
-           *
-           * @param {number} intensity fog intensity 0..1
-           * @param {number} fullRange the no-fog visibility range (px), e.g. radar size
-           * @param {boolean} ilsOwned whether the ILS upgrade is owned (FEAT-005 flag)
+           * Create a fog bank. A rounded-rect region with a center (x,y), half-extents
+           * (hx,hy) and a drift velocity (vx,vy) in px / px per second. `radius` rounds
+           * the corners (clamped to the smaller half-extent). A bank can be LARGE (cover
+           * a big part of the map). Pure factory.
            */
-          function fogVisibilityRange(intensity, fullRange, ilsOwned = false) {
-            if (ilsOwned) return fullRange;
-            const i = Math.max(0, Math.min(1, intensity));
-            // At full fog, visibility collapses to ~22% of the range.
-            const minFactor = 0.22;
-            const factor = 1 - (1 - minFactor) * i;
-            return fullRange * factor;
+          function createFogBank(opts = {}) {
+            const hx = opts.hx ?? 120;
+            const hy = opts.hy ?? 120;
+            return {
+              id: opts.id ?? 0,
+              x: opts.x ?? 0,
+              y: opts.y ?? 0,
+              hx,
+              hy,
+              vx: opts.vx ?? 0,
+              vy: opts.vy ?? 0,
+              radius: Math.max(0, Math.min(opts.radius ?? Math.min(hx, hy) * 0.5, Math.min(hx, hy))),
+              life: opts.life ?? Infinity, // seconds remaining before the bank clears
+            };
           }
 
           /**
-           * The render alpha for an aircraft at `distance` from the field center given the
-           * current fog visibility range. Planes within the range are fully visible; they
-           * fade out over a short band beyond it. Pure function (used by renderSystem).
+           * Advance a fog bank by dt seconds, drifting it along its velocity and
+           * decrementing its life. Mutates and returns the bank. Pure (deterministic for
+           * fixed inputs).
            */
-          function fogAlphaForDistance(distance, visibilityRange) {
-            if (distance <= visibilityRange) return 1;
-            const fade = Math.max(1, visibilityRange * 0.25);
-            const over = distance - visibilityRange;
-            return Math.max(0, 1 - over / fade);
+          function driftFogBank(bank, dt) {
+            bank.x += bank.vx * dt;
+            bank.y += bank.vy * dt;
+            if (Number.isFinite(bank.life)) bank.life -= dt;
+            return bank;
+          }
+
+          /**
+           * Whether a point lies inside a fog bank (rounded-rectangle test). Pure.
+           * The rounded-rect is the Minkowski sum of an inner rectangle (half-extents
+           * hx-r, hy-r) and a disc of radius r, so the test is: clamp the point to the
+           * inner rectangle, then check the distance to that clamp is <= r.
+           */
+          function isPointInFog(bank, x, y) {
+            if (!bank) return false;
+            const r = bank.radius || 0;
+            const ix = Math.max(0, bank.hx - r);
+            const iy = Math.max(0, bank.hy - r);
+            let dx = Math.abs(x - bank.x) - ix;
+            let dy = Math.abs(y - bank.y) - iy;
+            if (dx <= 0 && dy <= 0) return true; // inside the inner rectangle
+            dx = Math.max(dx, 0);
+            dy = Math.max(dy, 0);
+            return Math.hypot(dx, dy) <= r;
+          }
+
+          /** Whether a point lies inside ANY of a list of fog banks. Pure. */
+          function pointInAnyFog(banks, x, y) {
+            if (!banks) return null;
+            for (const bank of banks) {
+              if (isPointInFog(bank, x, y)) return bank;
+            }
+            return null;
+          }
+
+          /**
+           * The authoritative CONCEALMENT decision for a single plane against the fog
+           * region(s). A plane is concealed (hidden, shows a '?') when it is inside a fog
+           * bank AND it is neither ILS-equipped NOR the selected/communicating plane.
+           * ILS ownership or selection grants full visibility through fog. Pure function
+           * so the hide/override logic is unit-testable independent of the renderer.
+           *
+           * @param {object|Array} banks a single bank or a list of banks
+           * @param {number} x point x (the plane's displayed/last-known position)
+           * @param {number} y point y
+           * @param {object} [flags] { selected?:boolean, ilsOwned?:boolean }
+           * @returns {boolean} true => CONCEAL (hide + show '?'), false => visible
+           */
+          function fogConceals(banks, x, y, flags = {}) {
+            if (flags.selected || flags.ilsOwned) return false;
+            const list = Array.isArray(banks) ? banks : banks ? [banks] : [];
+            if (list.length === 0) return false;
+            return pointInAnyFog(list, x, y) != null;
           }
 
           // --- Controller ------------------------------------------------------------
@@ -2281,6 +2342,11 @@ body {
             fogMinInterval: 55,
             fogMaxInterval: 110,
             fogDuration: [25, 50],
+            // Moving fog bank tuning. The bank is a large rounded-rect that drifts across
+            // the field from an edge. Half-extents are a FRACTION of the field size so a
+            // bank can conceal a large part of the map; speed is px/s drift.
+            fogBankHalfSpan: [0.32, 0.5], // half-extent as a fraction of field width/height
+            fogBankSpeed: [8, 20], // px/s drift
             windTolerance: Math.PI / 2,
             // Length (s of sim time) of the transition window opened on a wind shift,
             // during which BOTH the old and new into-wind ends remain routable so the
@@ -2290,7 +2356,7 @@ body {
 
           /**
            * Create a WeatherController. It owns the mutable weather state (wind direction,
-           * active storm cells, fog intensity) and schedules changes using the seeded RNG
+           * active storm cells, drifting fog banks) and schedules changes using the seeded RNG
            * so a shift is reproducible. The ECS weatherSystem calls update() each tick and
            * reads the resulting state; emitting HUD banners is the system's job.
            *
@@ -2315,15 +2381,16 @@ body {
               windPrevDirection: null,
               windTransition: { active: false, fromDirection: null, toDirection: null, remaining: 0 },
               storms: [],
-              fogIntensity: 0,
+              // Active fog banks (moving regions). Empty when no fog episode is running.
+              fogBanks: [],
               _nextStormId: 1,
+              _nextFogId: 1,
             };
 
             // Schedule timers (seconds of sim time until the next event of each type).
             let windTimer = randRange(cfg.windShiftMinInterval, cfg.windShiftMaxInterval);
             let stormTimer = randRange(cfg.stormMinInterval, cfg.stormMaxInterval);
             let fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
-            let fogActiveFor = 0; // remaining seconds of the current fog episode
 
             function randRange(a, b) {
               return rng ? rng.range(a, b) : (a + b) / 2;
@@ -2398,6 +2465,43 @@ body {
             }
 
             /**
+             * Spawn a fog bank drifting across the field from a random edge. The bank is
+             * a large rounded-rect (half-extents a fraction of the field) that enters from
+             * just off one edge and drifts toward/across the field, concealing the part of
+             * the scope it covers until it clears (life) or drifts well off the field.
+             */
+            function spawnFogBank() {
+              const w = map ? map.width : 400;
+              const h = map ? map.height : 600;
+              const cx = map ? map.center.x : w / 2;
+              const cy = map ? map.center.y : h / 2;
+              const hx = randRange(cfg.fogBankHalfSpan[0], cfg.fogBankHalfSpan[1]) * w;
+              const hy = randRange(cfg.fogBankHalfSpan[0], cfg.fogBankHalfSpan[1]) * h;
+              const edge = rng ? rng.rangeInt(0, 3) : 0;
+              let x;
+              let y;
+              if (edge === 0) { x = -hx; y = randRange(0, h); }
+              else if (edge === 1) { x = w + hx; y = randRange(0, h); }
+              else if (edge === 2) { x = randRange(0, w); y = -hy; }
+              else { x = randRange(0, w); y = h + hy; }
+              const toCenter = Math.atan2(cy - y, cx - x) + (rng ? rng.range(-0.4, 0.4) : 0);
+              const speed = randRange(cfg.fogBankSpeed[0], cfg.fogBankSpeed[1]);
+              const bank = createFogBank({
+                id: state._nextFogId++,
+                x,
+                y,
+                hx,
+                hy,
+                vx: Math.cos(toCenter) * speed,
+                vy: Math.sin(toCenter) * speed,
+                radius: Math.min(hx, hy) * 0.4,
+                life: randRange(cfg.fogDuration[0], cfg.fogDuration[1]),
+              });
+              state.fogBanks.push(bank);
+              return bank;
+            }
+
+            /**
              * Advance weather by dt. Returns a list of event objects that occurred this
              * tick, e.g. [{type:'wind'}, {type:'storm', cell}, {type:'fog', on:true}].
              * The caller (weatherSystem) turns these into HUD banners / EventBus emits.
@@ -2453,22 +2557,32 @@ body {
                 }
               }
 
-              // Fog schedule: toggle an episode on/off.
-              if (fogActiveFor > 0) {
-                fogActiveFor -= dt;
-                // Ramp intensity up to 1 quickly, hold, then let it clear when the timer
-                // runs out.
-                state.fogIntensity = Math.min(1, state.fogIntensity + dt * 0.5);
-                if (fogActiveFor <= 0) {
-                  state.fogIntensity = 0;
-                  fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
-                  events.push({ type: "fog", on: false });
+              // Fog schedule: a fog episode SPAWNS a drifting bank from an edge rather
+              // than ramping a global intensity. Banks drift + retire below; when none
+              // remain the episode is considered over and the next-spawn timer rearms.
+              const fogBounds = map ? Math.max(map.width, map.height) : 600;
+              for (const bank of state.fogBanks) driftFogBank(bank, dt);
+              const fogCountBefore = state.fogBanks.length;
+              state.fogBanks = state.fogBanks.filter((b) => {
+                if (Number.isFinite(b.life) && b.life <= 0) return false;
+                const bcx = map ? map.center.x : 200;
+                const bcy = map ? map.center.y : 300;
+                // Retire a bank once it has fully drifted off the field.
+                if (Math.hypot(b.x - bcx, b.y - bcy) > fogBounds * 1.2 + Math.max(b.hx, b.hy)) {
+                  return false;
                 }
-              } else {
+                return true;
+              });
+              if (fogCountBefore > 0 && state.fogBanks.length === 0) {
+                // The last bank cleared: episode over, rearm the spawn timer.
+                fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
+                events.push({ type: "fog", on: false });
+              }
+
+              if (state.fogBanks.length === 0) {
                 fogTimer -= dt;
                 if (fogTimer <= 0) {
-                  fogActiveFor = randRange(cfg.fogDuration[0], cfg.fogDuration[1]);
-                  state.fogIntensity = 0.05;
+                  spawnFogBank();
                   events.push({ type: "fog", on: true });
                 }
               }
@@ -2482,6 +2596,7 @@ body {
               // Expose the schedulers for tests / manual triggering.
               shiftWind,
               spawnStorm,
+              spawnFogBank,
               windStateSnapshot,
               get storms() {
                 return state.storms;
@@ -2492,8 +2607,8 @@ body {
               get windTransition() {
                 return state.windTransition;
               },
-              get fogIntensity() {
-                return state.fogIntensity;
+              get fogBanks() {
+                return state.fogBanks;
               },
             };
           }
@@ -2508,8 +2623,11 @@ body {
           exports.pointInAnyStorm = pointInAnyStorm;
           exports.pathCrossesStorm = pathCrossesStorm;
           exports.segmentIntersectsCircle = segmentIntersectsCircle;
-          exports.fogVisibilityRange = fogVisibilityRange;
-          exports.fogAlphaForDistance = fogAlphaForDistance;
+          exports.createFogBank = createFogBank;
+          exports.driftFogBank = driftFogBank;
+          exports.isPointInFog = isPointInFog;
+          exports.pointInAnyFog = pointInAnyFog;
+          exports.fogConceals = fogConceals;
           exports.WEATHER_DEFAULTS = WEATHER_DEFAULTS;
           exports.createWeatherController = createWeatherController;
         },
@@ -4718,12 +4836,13 @@ body {
           //     reputation like a fuel-out and emits 'aircraft:stormloss'.
           //   - wind: the current wind state is exposed on game.weather for landingSystem
           //     to validate approach directions against.
-          //   - fog: the fog intensity/visibility range is exposed for renderSystem.
+          //   - fog: drifting fog region(s) are exposed on game.weather.fog for the render
+          //     layer, which conceals only planes inside a bank (display-only).
           // It emits HUD banner events ('weather:wind', 'weather:storm', 'weather:fog')
           // as weather changes occur.
 
           const { Components } = require("src/ecs/components.js");
-          const { createWeatherController, pointInAnyStorm, pathCrossesStorm, fogVisibilityRange } = require("src/game/weather.js");
+          const { createWeatherController, pointInAnyStorm, pathCrossesStorm } = require("src/game/weather.js");
 
           /** Build the ECS weather system bound to a game instance. */
           function createWeatherSystem(game) {
@@ -4750,14 +4869,12 @@ body {
                 remaining: controller.state.windTransition.remaining,
               },
               storms: controller.state.storms,
-              fogIntensity: 0,
-              fogVisibility: Infinity,
+              // Moving fog region(s). `banks` is the list of drifting rounded-rect banks
+              // that conceal the part of the scope they cover; `active` is true while any
+              // bank exists. Render/HUD read these; concealment is display-only.
+              fog: { banks: controller.state.fogBanks, active: controller.state.fogBanks.length > 0 },
               ilsOwned: game.ilsOwned ?? false, // FEAT-005 will flip this on purchase
             };
-
-            function fullRange() {
-              return Math.max(map.width, map.height) * 0.6;
-            }
 
             const system = function weatherSystem(dt) {
               if (game.gameOver) return;
@@ -4774,14 +4891,12 @@ body {
                 remaining: controller.state.windTransition.remaining,
               };
               game.weather.storms = controller.state.storms;
-              game.weather.fogIntensity = controller.state.fogIntensity;
+              game.weather.fog = {
+                banks: controller.state.fogBanks,
+                active: controller.state.fogBanks.length > 0,
+              };
               // The ILS flag is owned by FEAT-005; read it fresh each tick (default false).
               game.weather.ilsOwned = game.ilsOwned ?? false;
-              game.weather.fogVisibility = fogVisibilityRange(
-                controller.state.fogIntensity,
-                fullRange(),
-                game.weather.ilsOwned
-              );
 
               // Announce changes via banners / events.
               for (const ev of events) {
@@ -4795,7 +4910,7 @@ body {
                   bus.emit("weather:storm", { cell: ev.cell });
                 } else if (ev.type === "fog") {
                   if (ev.on) {
-                    game.flashBanner && game.flashBanner("FOG - VISIBILITY REDUCED");
+                    game.flashBanner && game.flashBanner("FOG BANK - RADAR BLOCKED IN AREA");
                     bus.emit("weather:fog", { on: true });
                   } else {
                     bus.emit("weather:fog", { on: false });
@@ -5663,9 +5778,9 @@ body {
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { runwayThreshold, runwayFarEnd, runwayEndLabel, normalizeAngle } = require("src/game/airport.js");
-          const { activeLandingDirections } = require("src/game/weather.js");
+          const { activeLandingDirections, fogConceals } = require("src/game/weather.js");
           const { updateSweepDisplay, sweepPeriod } = require("src/game/radar.js");
-          const { applyCamera, drawLowFuelGauges, drawProximityAlarm, drawEventBanner, drawStorms, drawHospital, drawFog, drawWindIndicator, drawEmergencyFlash, aircraftFogAlpha } = require("src/ui/hud.js");
+          const { applyCamera, drawLowFuelGauges, drawProximityAlarm, drawEventBanner, drawStorms, drawHospital, drawFog, drawWindIndicator, drawEmergencyFlash } = require("src/ui/hud.js");
 
           // Separation at/under which the proximity alarm vignette begins. Matches the
           // widest class separation bubble so the alarm tracks real conflicts.
@@ -5685,7 +5800,15 @@ body {
               // can be centered on screen. With no camera target this is the identity.
               ctx.save();
               applyCamera(ctx, game.camera, width, height);
-              drawAirport(ctx, game.map, activeRunwayIds(world), game.time, game.weather);
+              drawAirport(
+                ctx,
+                game.map,
+                activeRunwayIds(world),
+                game.time,
+                game.weather,
+                selectedAssignment(world, game.selectedId),
+                blinkOn
+              );
               if (game.map) drawHospital(ctx, game.map.hospital);
               drawPaths(ctx, world, blinkOn);
               // DISPLAY-ONLY: the in-progress route the player is currently drawing. Read
@@ -5697,10 +5820,12 @@ body {
               drawAircraft(ctx, world, game, blinkPhase);
               drawEmergencyFlash(ctx, world, blinkOn);
               drawLowFuelGauges(ctx, world, blinkOn);
+              // Fog bank(s): a drifting region that conceals only the area it covers.
+              // Drawn in WORLD space (banks carry world coords) over the aircraft so the
+              // blocked part of the scope reads as clouded over. Concealment of individual
+              // blips happens inside drawAircraft (fogConceals + '?' glyph).
+              if (game.weather) drawFog(ctx, game.weather.fog);
               ctx.restore();
-
-              // Fog dims the whole field (screen space, over the world).
-              if (game.weather) drawFog(ctx, width, height, game.weather.fogIntensity);
 
               // Screen-space overlays.
               if (game.weather) drawWindIndicator(ctx, game.weather);
@@ -5779,12 +5904,27 @@ body {
           }
 
           /**
+           * The landing assignment of the currently-selected aircraft, so the render layer
+           * can emphasize the runway/pad the player is being asked to land it on when they
+           * select (communicate with) it. Returns the Aircraft.assignment or null.
+           */
+          function selectedAssignment(world, selectedId) {
+            if (selectedId == null || !world.hasEntity || !world.hasEntity(selectedId)) return null;
+            const ac = world.getComponent(selectedId, Components.Aircraft);
+            return ac && ac.assignment ? ac.assignment : null;
+          }
+
+          /**
            * Draw runways, their approach cones, and the helipad. `now` is the current sim
            * time: a runway with `now < occupiedUntil` has just taken a landing and is
            * rendered RED ("occupied / clearing") until the ground crew clears it, when it
            * returns to its normal/green styling.
+           *
+           * `highlight` is the selected aircraft's assignment (FEAT-004 select=communicate):
+           * when set, the runway/pad the plane must land on gets an extra bright emphasis
+           * so the player can see where to route it. `blinkOn` pulses that emphasis.
            */
-          function drawAirport(ctx, map, activeIds, now = 0, weather = null) {
+          function drawAirport(ctx, map, activeIds, now = 0, weather = null, highlight = null, blinkOn = true) {
             if (!map) return;
             const active = activeIds || new Set();
 
@@ -5948,6 +6088,57 @@ body {
               ctx.fillText("H", pad.x, pad.y + 1);
               ctx.textAlign = "left";
               ctx.textBaseline = "alphabetic";
+            }
+
+            // FEAT-004: emphasize the surface the SELECTED plane is assigned to, so
+            // "communicating" with a plane shows where it needs to land. For a specific
+            // runway/pad draw a bright pulsing marker; for 'any' mode we deliberately draw
+            // NOTHING extra (the plane has no preference, so no single surface to point
+            // at) — the simpler, less-cluttered readable option.
+            if (highlight) drawAssignmentHighlight(ctx, map, highlight, blinkOn);
+          }
+
+          /**
+           * Draw an extra emphasis marker on the runway/pad named by a selected plane's
+           * assignment. A specific runway gets a bright pulsing centerline glow + end ring;
+           * a specific pad gets a pulsing ring. 'any' mode highlights nothing (no single
+           * surface to point at). Display-only.
+           */
+          function drawAssignmentHighlight(ctx, map, assignment, blinkOn) {
+            const col = blinkOn ? "rgba(120, 230, 255, 0.95)" : "rgba(120, 230, 255, 0.4)";
+            if (assignment.kind === "runway" && assignment.runwayId != null) {
+              const runway = map.runways && map.runways.find((r) => r.id === assignment.runwayId);
+              if (!runway) return;
+              const thr = runwayThreshold(runway);
+              const far = runwayFarEnd(runway);
+              ctx.save();
+              ctx.strokeStyle = col;
+              ctx.lineWidth = 3;
+              ctx.setLineDash([]);
+              ctx.beginPath();
+              ctx.moveTo(thr.x, thr.y);
+              ctx.lineTo(far.x, far.y);
+              ctx.stroke();
+              // End rings so the assigned strip pops.
+              for (const end of [thr, far]) {
+                ctx.beginPath();
+                ctx.arc(end.x, end.y, runway.width * 0.9 + 4, 0, Math.PI * 2);
+                ctx.stroke();
+              }
+              ctx.restore();
+              return;
+            }
+            if (assignment.kind === "helipad") {
+              const pads = map.helipads && map.helipads.length ? map.helipads : map.helipad ? [map.helipad] : [];
+              const pad = assignment.padId != null ? pads.find((p) => p.id === assignment.padId) : map.helipad;
+              if (!pad) return;
+              ctx.save();
+              ctx.strokeStyle = col;
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.arc(pad.x, pad.y, pad.radius + 5, 0, Math.PI * 2);
+              ctx.stroke();
+              ctx.restore();
             }
           }
 
@@ -6116,7 +6307,8 @@ body {
            * between it holds the last-swept position and fades. The authoritative sim is
            * never consulted here beyond reading true positions to latch. Selected and
            * warning/emergency aircraft are force-latched every frame so a stale blip can
-           * never hide an actionable conflict. Fog/ILS alpha multiplies the sweep alpha.
+           * never hide an actionable conflict. A plane inside a drifting fog bank (not ILS,
+           * not selected) is concealed and shown as a '?' at its last-known position.
            */
           function drawAircraft(ctx, world, game, blinkPhase) {
             const blinkOn = blinkPhase === undefined ? true : blinkPhase < 0.5;
@@ -6169,14 +6361,27 @@ body {
               if (!render.seen) continue;
 
               // Displayed blip position/heading is the LAST-SWEPT value, not the live one.
+              // A selected plane is force-latched to its LIVE position above (force=true
+              // makes updateSweepDisplay latch the true x/y/heading every frame), so a
+              // communicated-with plane shows its live location even through fog + sweep.
               const dx = render.lastSweepX;
               const dy = render.lastSweepY;
               const dHeading = render.lastSweepHeading;
 
-              // Fog/ILS alpha is evaluated at the displayed (last-swept) position so it
-              // composes with the sweep gating rather than fighting it.
-              const fogAlpha = aircraftFogAlpha(game.weather, game.map, dx, dy);
-              if (fogAlpha <= 0.02) continue;
+              // Fog concealment (DISPLAY-ONLY): a plane inside a drifting fog bank is
+              // hidden on radar UNLESS it is ILS-equipped or the plane the player has
+              // selected/communicated-with. Evaluated at the displayed (last-swept)
+              // position so it composes with the sweep gating. When concealed we draw a
+              // '?' glyph at the last-known position and set Render.fogHidden (consumed by
+              // the flight strips in FEAT-006); otherwise we clear the flag.
+              const banks = game.weather && game.weather.fog ? game.weather.fog.banks : null;
+              const ilsOwned = !!(game.weather && game.weather.ilsOwned);
+              const concealed = fogConceals(banks, dx, dy, { selected, ilsOwned });
+              render.fogHidden = concealed;
+              if (concealed) {
+                drawFogQuestionMark(ctx, dx, dy);
+                continue;
+              }
 
               // Sweep fade: full alpha right after a sweep, decaying toward a floor as the
               // blip ages over one refresh period. Important planes stay at full alpha.
@@ -6187,7 +6392,7 @@ body {
                 sweepAlpha = 1 - (1 - BLIP_FADE_FLOOR) * frac;
               }
 
-              const alpha = fogAlpha * sweepAlpha;
+              const alpha = sweepAlpha;
               if (alpha <= 0.02) continue;
 
               // Short fading trail from the previous display toward the fresh blip, so a
@@ -6257,6 +6462,33 @@ body {
             }
           }
 
+          /**
+           * Draw a '?' glyph at a fog-concealed plane's last-known / last-swept position.
+           * This is the only on-radar cue for a plane hidden inside a fog bank: its true
+           * position is still simulated, but the player sees only the unknown marker here.
+           */
+          function drawFogQuestionMark(ctx, x, y) {
+            ctx.save();
+            ctx.globalAlpha = 0.85;
+            // Faint disc so the marker reads against the clouded area.
+            ctx.fillStyle = "rgba(170,180,188,0.25)";
+            ctx.beginPath();
+            ctx.arc(x, y, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "rgba(230,236,242,0.95)";
+            ctx.strokeStyle = "rgba(0,20,5,0.8)";
+            ctx.lineWidth = 2.5;
+            ctx.lineJoin = "round";
+            ctx.font = 'bold 13px "Courier New", monospace';
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.strokeText("?", x, y + 1);
+            ctx.fillText("?", x, y + 1);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
+            ctx.restore();
+          }
+
           /** Dim overlay + message when the level ends. */
           function drawGameOver(ctx, width, height, reason) {
             ctx.fillStyle = "rgba(0,0,0,0.6)";
@@ -6298,18 +6530,19 @@ body {
           //   - drawProximityAlarm: a screen-edge red vignette whose intensity tracks the
           //     closest separation (the audible alarm is wired separately in FEAT-006).
           //   - drawEventBanner: a top banner for transient event messages.
-          //   - applyCamera / clearCamera: center the view on the selected plane.
+          //   - drawFog: the drifting fog bank region(s) (world space).
+          //   - applyCamera: identity transform (the view stays put; no center-on-select).
 
           const { Components } = require("src/ecs/components.js");
           const { getAircraftDef } = require("src/game/aircraft.js");
           const { fuelStatus } = require("src/game/fuel.js");
-          const { fogAlphaForDistance } = require("src/game/weather.js");
           const { EmergencyType } = require("src/game/emergencies.js");
 
           /**
-           * Apply the camera transform (translate so camera.target is centered). Call
-           * after ctx.save(); pair with a ctx.restore(). No-op if there is no target.
-           * Returns the applied offset for hit-testing callers that need it.
+           * Apply the camera transform (translate so camera.target is centered). FEAT-004
+           * keeps the view STATIC: camera.target is always null, so this is the identity
+           * transform (no pan). Retained as a no-op + for a possible future panning camera.
+           * Call after ctx.save(); pair with a ctx.restore(). Returns the applied offset.
            */
           function applyCamera(ctx, camera, width, height) {
             if (!camera || !camera.target) return { x: 0, y: 0 };
@@ -6427,32 +6660,55 @@ body {
           }
 
           /**
-           * Dim aircraft that are outside the fog visibility range so planes only draw
-           * when close. Returns a function used by drawAircraft; here we expose a helper
-           * to compute an aircraft's fog alpha so the render system can apply it. When
-           * there is no fog (intensity ~0) this returns 1 for everything.
+           * Draw the drifting fog bank(s) as translucent rounded-rect regions over the
+           * area each covers (WORLD space, so they pan/latch with the field). This is the
+           * visible extent of the radar-blocking fog region; the concealment decision for
+           * individual planes is made by fogConceals() in the render layer. Takes the
+           * published fog snapshot (game.weather.fog = {banks, active}).
            */
-          function aircraftFogAlpha(weather, map, x, y) {
-            if (!weather || !map || !(weather.fogIntensity > 0.01)) return 1;
-            if (weather.ilsOwned) return 1;
-            const d = Math.hypot(x - map.center.x, y - map.center.y);
-            return fogAlphaForDistance(d, weather.fogVisibility ?? Infinity);
+          function drawFog(ctx, fog) {
+            if (!fog || !fog.banks || fog.banks.length === 0) return;
+            ctx.save();
+            for (const bank of fog.banks) {
+              const r = Math.max(0, bank.radius || 0);
+              const w = bank.hx * 2;
+              const h = bank.hy * 2;
+              const x0 = bank.x - bank.hx;
+              const y0 = bank.y - bank.hy;
+              // A soft radial fill so the bank reads as a cloud rather than a hard box.
+              const grad = ctx.createRadialGradient(
+                bank.x, bank.y, Math.min(bank.hx, bank.hy) * 0.2,
+                bank.x, bank.y, Math.max(bank.hx, bank.hy)
+              );
+              grad.addColorStop(0, "rgba(205,212,218,0.42)");
+              grad.addColorStop(0.75, "rgba(198,206,214,0.34)");
+              grad.addColorStop(1, "rgba(198,206,214,0.06)");
+              ctx.fillStyle = grad;
+              roundedRectPath(ctx, x0, y0, w, h, r);
+              ctx.fill();
+              // Faint outline so the blocked area's edge is legible.
+              ctx.strokeStyle = "rgba(220,228,235,0.35)";
+              ctx.lineWidth = 1.5;
+              roundedRectPath(ctx, x0, y0, w, h, r);
+              ctx.stroke();
+            }
+            ctx.restore();
           }
 
-          /** Paint a fog vignette over the whole radar (screen space). */
-          function drawFog(ctx, width, height, intensity) {
-            if (!(intensity > 0.01)) return;
-            const a = Math.min(0.55, 0.15 + intensity * 0.5);
-            const grad = ctx.createRadialGradient(
-              width / 2, height / 2, Math.min(width, height) * 0.12,
-              width / 2, height / 2, Math.max(width, height) * 0.6
-            );
-            grad.addColorStop(0, `rgba(200,210,215,${a * 0.3})`);
-            grad.addColorStop(1, `rgba(200,210,215,${a})`);
-            ctx.save();
-            ctx.fillStyle = grad;
-            ctx.fillRect(0, 0, width, height);
-            ctx.restore();
+          /** Trace a rounded-rectangle path (no fill/stroke). Pure-ish ctx helper. */
+          function roundedRectPath(ctx, x, y, w, h, r) {
+            const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+            ctx.beginPath();
+            ctx.moveTo(x + rr, y);
+            ctx.lineTo(x + w - rr, y);
+            ctx.arcTo(x + w, y, x + w, y + rr, rr);
+            ctx.lineTo(x + w, y + h - rr);
+            ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+            ctx.lineTo(x + rr, y + h);
+            ctx.arcTo(x, y + h, x, y + h - rr, rr);
+            ctx.lineTo(x, y + rr);
+            ctx.arcTo(x, y, x + rr, y, rr);
+            ctx.closePath();
           }
 
           /** Draw a wind-direction arrow + label in the top-left corner (screen space). */
@@ -6537,7 +6793,6 @@ body {
           exports.drawProximityAlarm = drawProximityAlarm;
           exports.drawStorms = drawStorms;
           exports.drawHospital = drawHospital;
-          exports.aircraftFogAlpha = aircraftFogAlpha;
           exports.drawFog = drawFog;
           exports.drawWindIndicator = drawWindIndicator;
           exports.drawEmergencyFlash = drawEmergencyFlash;
@@ -6547,8 +6802,9 @@ body {
           // Flight strips: the scrollable list in the bottom console, one strip per active
           // aircraft. Each strip shows the callsign/ID, class, a live altitude readout
           // (derived/animated from how long the plane has been inbound) and a fuel status
-          // bar. Tapping a strip selects that aircraft and centers the camera on it (the
-          // render system reads game.camera.target).
+          // bar. Tapping a strip selects (COMMUNICATES with) that aircraft: the render
+          // layer reveals its live position (even through fog) and highlights the surface
+          // it must land on. The camera does NOT move (the view stays put).
           //
           // Browser-coupled (creates DOM), but constructed only from console.js at start,
           // so the pure modules it imports still load under Node. Strips are added on
@@ -6608,7 +6864,7 @@ body {
               el.appendChild(head);
               el.appendChild(fuelBar);
 
-              // Tap/click selects the aircraft and centers the camera on it.
+              // Tap/click selects (communicates with) the aircraft. No camera move.
               el.addEventListener("click", () => select(id));
 
               container.appendChild(el);
@@ -6622,25 +6878,25 @@ body {
               strips.delete(id);
               if (game.selectedId === id) {
                 game.selectedId = null;
-                if (game.camera) game.camera.target = null;
-              }
-            }
-
-            /** Select an aircraft: highlight its strip and center the camera on it. */
-            function select(id) {
-              if (!world.hasEntity || !world.hasEntity(id)) return;
-              game.selectedId = id;
-              const t = world.getComponent(id, Components.Transform);
-              if (t && game.camera) {
-                game.camera.target = { x: t.x, y: t.y };
-                game.camera.followId = id;
               }
             }
 
             /**
+             * Select (COMMUNICATE with) an aircraft: highlight its strip and emit
+             * 'aircraft:selected'. This reveals the plane's live position through fog and
+             * highlights its assigned surface in the render layer. It does NOT move or
+             * recenter the camera — the view stays put.
+             */
+            function select(id) {
+              if (!world.hasEntity || !world.hasEntity(id)) return;
+              const wasSelected = game.selectedId === id;
+              game.selectedId = id;
+              if (!wasSelected && game.bus) game.bus.emit("aircraft:selected", { id });
+            }
+
+            /**
              * Refresh every strip's live data (altitude readout + fuel bar) and the
-             * selected-strip highlight. Also keeps the camera target tracking a followed
-             * plane. Called from console.update() each render.
+             * selected-strip highlight. Called from console.update() each render.
              */
             function refresh() {
               for (const [id, strip] of strips) {
@@ -6662,18 +6918,6 @@ body {
                 }
 
                 strip.el.classList.toggle("selected", game.selectedId === id);
-              }
-
-              // Keep the camera centered on the followed plane as it moves.
-              if (game.camera && game.camera.followId != null) {
-                const fid = game.camera.followId;
-                if (world.hasEntity(fid)) {
-                  const t = world.getComponent(fid, Components.Transform);
-                  if (t) game.camera.target = { x: t.x, y: t.y };
-                } else {
-                  game.camera.followId = null;
-                  game.camera.target = null;
-                }
               }
             }
 
@@ -7241,8 +7485,10 @@ body {
           /**
            * Convert a pointer event's client coordinates to world/canvas coordinates.
            * Accounts for the canvas CSS box; the game draws in CSS pixels (the 2D context
-           * already has the devicePixelRatio transform applied in main.js), and there is
-           * no camera offset on Map 1, so world == CSS-pixel space. Pure helper.
+           * already has the devicePixelRatio transform applied in main.js). FEAT-004 keeps
+           * the camera STATIC (camera.target is always null), so world == CSS-pixel space
+           * and no offset is subtracted; the camera branch is retained only as a defensive
+           * no-op in case a target is ever set. Pure helper, robust when camera is null.
            * @param {DOMRect} rect canvas bounding rect
            * @param {number} clientX
            * @param {number} clientY
@@ -7250,7 +7496,8 @@ body {
           function screenToWorld(rect, clientX, clientY, camera, width, height) {
             let x = clientX - rect.left;
             let y = clientY - rect.top;
-            // Undo the camera translate (renderSystem centers camera.target on screen).
+            // With a static camera (camera.target null) this is a no-op. Retained so a
+            // future panning camera still maps correctly; robust when camera is null.
             if (camera && camera.target && width != null && height != null) {
               x -= width / 2 - camera.target.x;
               y -= height / 2 - camera.target.y;
@@ -7694,8 +7941,10 @@ body {
               time: 0, // accumulated simulation time (seconds)
               sweep: 0, // radar sweep angle (radians)
               selectedId: null,
-              // Camera for strip-centering: target in world coords, followId tracks a
-              // selected plane. null target == identity (no pan), the default on Map 1.
+              // Camera: FEAT-004 keeps the view STATIC. Selecting (communicating with) a
+              // plane never recenters or follows it; target stays null (identity transform)
+              // so the scope never pans. followId is retained only as a null placeholder
+              // for back-compat with code that reads game.camera.
               camera: { target: null, followId: null },
               // Transient top-banner event message: { text, alpha, until }.
               banner: null,

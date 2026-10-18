@@ -72,8 +72,10 @@ export function createGame(options = {}) {
     time: 0, // accumulated simulation time (seconds)
     sweep: 0, // radar sweep angle (radians)
     selectedId: null,
-    // Camera for strip-centering: target in world coords, followId tracks a
-    // selected plane. null target == identity (no pan), the default on Map 1.
+    // Camera: FEAT-004 keeps the view STATIC. Selecting (communicating with) a
+    // plane never recenters or follows it; target stays null (identity transform)
+    // so the scope never pans. followId is retained only as a null placeholder
+    // for back-compat with code that reads game.camera.
     camera: { target: null, followId: null },
     // Transient top-banner event message: { text, alpha, until }.
     banner: null,

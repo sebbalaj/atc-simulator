@@ -37,8 +37,10 @@ const MIN_POINT_DISTANCE = 12;
 /**
  * Convert a pointer event's client coordinates to world/canvas coordinates.
  * Accounts for the canvas CSS box; the game draws in CSS pixels (the 2D context
- * already has the devicePixelRatio transform applied in main.js), and there is
- * no camera offset on Map 1, so world == CSS-pixel space. Pure helper.
+ * already has the devicePixelRatio transform applied in main.js). FEAT-004 keeps
+ * the camera STATIC (camera.target is always null), so world == CSS-pixel space
+ * and no offset is subtracted; the camera branch is retained only as a defensive
+ * no-op in case a target is ever set. Pure helper, robust when camera is null.
  * @param {DOMRect} rect canvas bounding rect
  * @param {number} clientX
  * @param {number} clientY
@@ -46,7 +48,8 @@ const MIN_POINT_DISTANCE = 12;
 export function screenToWorld(rect, clientX, clientY, camera, width, height) {
   let x = clientX - rect.left;
   let y = clientY - rect.top;
-  // Undo the camera translate (renderSystem centers camera.target on screen).
+  // With a static camera (camera.target null) this is a no-op. Retained so a
+  // future panning camera still maps correctly; robust when camera is null.
   if (camera && camera.target && width != null && height != null) {
     x -= width / 2 - camera.target.x;
     y -= height / 2 - camera.target.y;

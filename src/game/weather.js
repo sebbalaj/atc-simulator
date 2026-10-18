@@ -10,10 +10,11 @@
 //   THUNDERSTORM- opaque circular cells with a position, radius and drift
 //                 velocity. Each tick the cell drifts; a plane whose position
 //                 (or drawn route) intersects a cell is destroyed / loses nav.
-//   FOG         - a visibility factor (0..1). The render system fades aircraft
-//                 that are farther than the fog visibility range from the field,
-//                 unless the ILS upgrade is owned (fogVisibilityRange reads an
-//                 ILS-owned flag, default false until FEAT-005 sets it).
+//   FOG         - a MOVING REGION (a drifting "bank") that conceals only the
+//                 part of the scope it covers. A plane inside the bank is hidden
+//                 on radar (shows a '?' at its last-known position) unless it is
+//                 ILS-equipped or the player has selected/communicated with it.
+//                 Concealment is DISPLAY-ONLY; the sim runs on true positions.
 
 import { normalizeAngle, angleDifference } from "./airport.js";
 
@@ -176,37 +177,97 @@ export function segmentIntersectsCircle(a, b, cell) {
   return Math.hypot(cell.x - cx, cell.y - cy) <= cell.radius;
 }
 
-// --- Fog -------------------------------------------------------------------
+// --- Fog (moving region / "bank") ------------------------------------------
+//
+// Fog is now a MOVING REGION rather than a global visibility shrink. A fog bank
+// is a rounded-rectangle area (half-extents hx/hy, with a corner radius) that
+// drifts across the field along a velocity. It conceals ONLY the part of the
+// scope it covers: a plane inside the bank is hidden on radar (shows a '?' at
+// its last-known position) unless it is ILS-equipped or the player has selected
+// (is communicating with) it. Concealment is DISPLAY-ONLY; the sim always runs
+// on true positions. All the geometry/decision logic here is pure so it can be
+// unit-tested under Node.
 
 /**
- * The visibility range (px) at a given fog intensity. 0 intensity = full
- * visibility (a large range); as intensity rises the range shrinks so planes
- * only draw when close. When ILS is owned the controller keeps full visibility
- * regardless of fog. Pure function.
- *
- * @param {number} intensity fog intensity 0..1
- * @param {number} fullRange the no-fog visibility range (px), e.g. radar size
- * @param {boolean} ilsOwned whether the ILS upgrade is owned (FEAT-005 flag)
+ * Create a fog bank. A rounded-rect region with a center (x,y), half-extents
+ * (hx,hy) and a drift velocity (vx,vy) in px / px per second. `radius` rounds
+ * the corners (clamped to the smaller half-extent). A bank can be LARGE (cover
+ * a big part of the map). Pure factory.
  */
-export function fogVisibilityRange(intensity, fullRange, ilsOwned = false) {
-  if (ilsOwned) return fullRange;
-  const i = Math.max(0, Math.min(1, intensity));
-  // At full fog, visibility collapses to ~22% of the range.
-  const minFactor = 0.22;
-  const factor = 1 - (1 - minFactor) * i;
-  return fullRange * factor;
+export function createFogBank(opts = {}) {
+  const hx = opts.hx ?? 120;
+  const hy = opts.hy ?? 120;
+  return {
+    id: opts.id ?? 0,
+    x: opts.x ?? 0,
+    y: opts.y ?? 0,
+    hx,
+    hy,
+    vx: opts.vx ?? 0,
+    vy: opts.vy ?? 0,
+    radius: Math.max(0, Math.min(opts.radius ?? Math.min(hx, hy) * 0.5, Math.min(hx, hy))),
+    life: opts.life ?? Infinity, // seconds remaining before the bank clears
+  };
 }
 
 /**
- * The render alpha for an aircraft at `distance` from the field center given the
- * current fog visibility range. Planes within the range are fully visible; they
- * fade out over a short band beyond it. Pure function (used by renderSystem).
+ * Advance a fog bank by dt seconds, drifting it along its velocity and
+ * decrementing its life. Mutates and returns the bank. Pure (deterministic for
+ * fixed inputs).
  */
-export function fogAlphaForDistance(distance, visibilityRange) {
-  if (distance <= visibilityRange) return 1;
-  const fade = Math.max(1, visibilityRange * 0.25);
-  const over = distance - visibilityRange;
-  return Math.max(0, 1 - over / fade);
+export function driftFogBank(bank, dt) {
+  bank.x += bank.vx * dt;
+  bank.y += bank.vy * dt;
+  if (Number.isFinite(bank.life)) bank.life -= dt;
+  return bank;
+}
+
+/**
+ * Whether a point lies inside a fog bank (rounded-rectangle test). Pure.
+ * The rounded-rect is the Minkowski sum of an inner rectangle (half-extents
+ * hx-r, hy-r) and a disc of radius r, so the test is: clamp the point to the
+ * inner rectangle, then check the distance to that clamp is <= r.
+ */
+export function isPointInFog(bank, x, y) {
+  if (!bank) return false;
+  const r = bank.radius || 0;
+  const ix = Math.max(0, bank.hx - r);
+  const iy = Math.max(0, bank.hy - r);
+  let dx = Math.abs(x - bank.x) - ix;
+  let dy = Math.abs(y - bank.y) - iy;
+  if (dx <= 0 && dy <= 0) return true; // inside the inner rectangle
+  dx = Math.max(dx, 0);
+  dy = Math.max(dy, 0);
+  return Math.hypot(dx, dy) <= r;
+}
+
+/** Whether a point lies inside ANY of a list of fog banks. Pure. */
+export function pointInAnyFog(banks, x, y) {
+  if (!banks) return null;
+  for (const bank of banks) {
+    if (isPointInFog(bank, x, y)) return bank;
+  }
+  return null;
+}
+
+/**
+ * The authoritative CONCEALMENT decision for a single plane against the fog
+ * region(s). A plane is concealed (hidden, shows a '?') when it is inside a fog
+ * bank AND it is neither ILS-equipped NOR the selected/communicating plane.
+ * ILS ownership or selection grants full visibility through fog. Pure function
+ * so the hide/override logic is unit-testable independent of the renderer.
+ *
+ * @param {object|Array} banks a single bank or a list of banks
+ * @param {number} x point x (the plane's displayed/last-known position)
+ * @param {number} y point y
+ * @param {object} [flags] { selected?:boolean, ilsOwned?:boolean }
+ * @returns {boolean} true => CONCEAL (hide + show '?'), false => visible
+ */
+export function fogConceals(banks, x, y, flags = {}) {
+  if (flags.selected || flags.ilsOwned) return false;
+  const list = Array.isArray(banks) ? banks : banks ? [banks] : [];
+  if (list.length === 0) return false;
+  return pointInAnyFog(list, x, y) != null;
 }
 
 // --- Controller ------------------------------------------------------------
@@ -224,6 +285,11 @@ export const WEATHER_DEFAULTS = Object.freeze({
   fogMinInterval: 55,
   fogMaxInterval: 110,
   fogDuration: [25, 50],
+  // Moving fog bank tuning. The bank is a large rounded-rect that drifts across
+  // the field from an edge. Half-extents are a FRACTION of the field size so a
+  // bank can conceal a large part of the map; speed is px/s drift.
+  fogBankHalfSpan: [0.32, 0.5], // half-extent as a fraction of field width/height
+  fogBankSpeed: [8, 20], // px/s drift
   windTolerance: Math.PI / 2,
   // Length (s of sim time) of the transition window opened on a wind shift,
   // during which BOTH the old and new into-wind ends remain routable so the
@@ -233,7 +299,7 @@ export const WEATHER_DEFAULTS = Object.freeze({
 
 /**
  * Create a WeatherController. It owns the mutable weather state (wind direction,
- * active storm cells, fog intensity) and schedules changes using the seeded RNG
+ * active storm cells, drifting fog banks) and schedules changes using the seeded RNG
  * so a shift is reproducible. The ECS weatherSystem calls update() each tick and
  * reads the resulting state; emitting HUD banners is the system's job.
  *
@@ -258,15 +324,16 @@ export function createWeatherController(opts = {}) {
     windPrevDirection: null,
     windTransition: { active: false, fromDirection: null, toDirection: null, remaining: 0 },
     storms: [],
-    fogIntensity: 0,
+    // Active fog banks (moving regions). Empty when no fog episode is running.
+    fogBanks: [],
     _nextStormId: 1,
+    _nextFogId: 1,
   };
 
   // Schedule timers (seconds of sim time until the next event of each type).
   let windTimer = randRange(cfg.windShiftMinInterval, cfg.windShiftMaxInterval);
   let stormTimer = randRange(cfg.stormMinInterval, cfg.stormMaxInterval);
   let fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
-  let fogActiveFor = 0; // remaining seconds of the current fog episode
 
   function randRange(a, b) {
     return rng ? rng.range(a, b) : (a + b) / 2;
@@ -341,6 +408,43 @@ export function createWeatherController(opts = {}) {
   }
 
   /**
+   * Spawn a fog bank drifting across the field from a random edge. The bank is
+   * a large rounded-rect (half-extents a fraction of the field) that enters from
+   * just off one edge and drifts toward/across the field, concealing the part of
+   * the scope it covers until it clears (life) or drifts well off the field.
+   */
+  function spawnFogBank() {
+    const w = map ? map.width : 400;
+    const h = map ? map.height : 600;
+    const cx = map ? map.center.x : w / 2;
+    const cy = map ? map.center.y : h / 2;
+    const hx = randRange(cfg.fogBankHalfSpan[0], cfg.fogBankHalfSpan[1]) * w;
+    const hy = randRange(cfg.fogBankHalfSpan[0], cfg.fogBankHalfSpan[1]) * h;
+    const edge = rng ? rng.rangeInt(0, 3) : 0;
+    let x;
+    let y;
+    if (edge === 0) { x = -hx; y = randRange(0, h); }
+    else if (edge === 1) { x = w + hx; y = randRange(0, h); }
+    else if (edge === 2) { x = randRange(0, w); y = -hy; }
+    else { x = randRange(0, w); y = h + hy; }
+    const toCenter = Math.atan2(cy - y, cx - x) + (rng ? rng.range(-0.4, 0.4) : 0);
+    const speed = randRange(cfg.fogBankSpeed[0], cfg.fogBankSpeed[1]);
+    const bank = createFogBank({
+      id: state._nextFogId++,
+      x,
+      y,
+      hx,
+      hy,
+      vx: Math.cos(toCenter) * speed,
+      vy: Math.sin(toCenter) * speed,
+      radius: Math.min(hx, hy) * 0.4,
+      life: randRange(cfg.fogDuration[0], cfg.fogDuration[1]),
+    });
+    state.fogBanks.push(bank);
+    return bank;
+  }
+
+  /**
    * Advance weather by dt. Returns a list of event objects that occurred this
    * tick, e.g. [{type:'wind'}, {type:'storm', cell}, {type:'fog', on:true}].
    * The caller (weatherSystem) turns these into HUD banners / EventBus emits.
@@ -396,22 +500,32 @@ export function createWeatherController(opts = {}) {
       }
     }
 
-    // Fog schedule: toggle an episode on/off.
-    if (fogActiveFor > 0) {
-      fogActiveFor -= dt;
-      // Ramp intensity up to 1 quickly, hold, then let it clear when the timer
-      // runs out.
-      state.fogIntensity = Math.min(1, state.fogIntensity + dt * 0.5);
-      if (fogActiveFor <= 0) {
-        state.fogIntensity = 0;
-        fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
-        events.push({ type: "fog", on: false });
+    // Fog schedule: a fog episode SPAWNS a drifting bank from an edge rather
+    // than ramping a global intensity. Banks drift + retire below; when none
+    // remain the episode is considered over and the next-spawn timer rearms.
+    const fogBounds = map ? Math.max(map.width, map.height) : 600;
+    for (const bank of state.fogBanks) driftFogBank(bank, dt);
+    const fogCountBefore = state.fogBanks.length;
+    state.fogBanks = state.fogBanks.filter((b) => {
+      if (Number.isFinite(b.life) && b.life <= 0) return false;
+      const bcx = map ? map.center.x : 200;
+      const bcy = map ? map.center.y : 300;
+      // Retire a bank once it has fully drifted off the field.
+      if (Math.hypot(b.x - bcx, b.y - bcy) > fogBounds * 1.2 + Math.max(b.hx, b.hy)) {
+        return false;
       }
-    } else {
+      return true;
+    });
+    if (fogCountBefore > 0 && state.fogBanks.length === 0) {
+      // The last bank cleared: episode over, rearm the spawn timer.
+      fogTimer = randRange(cfg.fogMinInterval, cfg.fogMaxInterval);
+      events.push({ type: "fog", on: false });
+    }
+
+    if (state.fogBanks.length === 0) {
       fogTimer -= dt;
       if (fogTimer <= 0) {
-        fogActiveFor = randRange(cfg.fogDuration[0], cfg.fogDuration[1]);
-        state.fogIntensity = 0.05;
+        spawnFogBank();
         events.push({ type: "fog", on: true });
       }
     }
@@ -425,6 +539,7 @@ export function createWeatherController(opts = {}) {
     // Expose the schedulers for tests / manual triggering.
     shiftWind,
     spawnStorm,
+    spawnFogBank,
     windStateSnapshot,
     get storms() {
       return state.storms;
@@ -435,8 +550,8 @@ export function createWeatherController(opts = {}) {
     get windTransition() {
       return state.windTransition;
     },
-    get fogIntensity() {
-      return state.fogIntensity;
+    get fogBanks() {
+      return state.fogBanks;
     },
   };
 }
