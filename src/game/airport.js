@@ -151,12 +151,77 @@ export function isHelipadLanding(helipad, endpoint, aircraftDef) {
 }
 
 /**
+ * Derive a sensible pair of opposite end labels from a runway id. A runway id
+ * commonly encodes both landing ends (e.g. '09/27', '13/31', '10/28'): the
+ * heading-0 end is the first token and the heading-PI (reciprocal) end is the
+ * second. For a single-token id ('36L','RW1','CVN') we attempt to compute the
+ * reciprocal of a two-digit magnetic-heading id ('36L' -> '18R', flipping the
+ * L/R side) and otherwise fall back to the id itself for both ends. Pure.
+ *
+ * Returns { near, far } where `near` is the label for the runway.heading end
+ * and `far` is the label for the reciprocal (runway.heading + PI) end.
+ * @param {string} id
+ * @returns {{near:string, far:string}}
+ */
+export function deriveEndLabels(id) {
+  if (typeof id !== "string" || id.length === 0) {
+    return { near: String(id ?? ""), far: String(id ?? "") };
+  }
+  // Explicit two-end form 'A/B'.
+  if (id.includes("/")) {
+    const [a, b] = id.split("/");
+    return { near: a, far: b || a };
+  }
+  // Single magnetic-heading token like '36L' / '18R' (two digits + optional
+  // side letter): compute the reciprocal heading (+/-18 in units of 10deg) and
+  // swap the L/R side so the opposite end reads correctly.
+  const m = id.match(/^(\d{1,2})([LRC]?)$/);
+  if (m) {
+    const num = parseInt(m[1], 10);
+    if (num >= 1 && num <= 36) {
+      let recip = num + 18;
+      if (recip > 36) recip -= 36;
+      const sideMap = { L: "R", R: "L", C: "C", "": "" };
+      const recipSide = sideMap[m[2]] ?? m[2];
+      const recipNum = String(recip).padStart(2, "0");
+      return { near: id, far: recipNum + recipSide };
+    }
+  }
+  // Non-heading id (e.g. 'RW1','CVN'): one stable label for both ends.
+  return { near: id, far: id };
+}
+
+/**
+ * The end label string for a given landing direction on a runway. `direction`
+ * is a heading (radians). If it matches the runway's base heading the `near`
+ * end label is returned; the reciprocal direction returns the `far` label.
+ * Falls back to deriving labels from the id when a runway predates endLabels.
+ * Pure function.
+ * @param {object} runway
+ * @param {number} direction landing heading (radians)
+ * @returns {string}
+ */
+export function runwayEndLabel(runway, direction) {
+  const labels = runway.endLabels || deriveEndLabels(runway.id);
+  // Which end does `direction` correspond to? Compare against the base heading.
+  const diff = angleDifference(direction, runway.heading);
+  return diff <= Math.PI / 2 ? labels.near : labels.far;
+}
+
+/**
  * Create a runway with a mutable occupancy state. `clearTime` is how long (s)
  * the runway stays blocked after a landing.
+ *
+ * `endLabels` { near, far } are human-readable END names for the two landing
+ * directions (the heading end and its reciprocal). They are DISPLAY labels; the
+ * string `id` remains the stable physical-strip identifier (tests and
+ * clearance.runwayId depend on the id, never on the labels). When omitted they
+ * are derived from the id via deriveEndLabels.
  */
 export function createRunway(opts) {
   return {
     id: opts.id,
+    endLabels: opts.endLabels ?? deriveEndLabels(opts.id),
     x: opts.x,
     y: opts.y,
     heading: opts.heading,

@@ -61,6 +61,13 @@ export const AircraftKind = Object.freeze({
  *  - color:              radar icon color.
  *  - landsOnHelipad:     true for the helicopter (helipad accepts any heading).
  *  - usesRunway:         true if the class lands on runways.
+ *  - assignmentPolicy:   per-class landing-assignment preference, one of
+ *                        'forced-long' | 'forced-pad' | 'prefer-short' | 'any'.
+ *                        COMMERCIAL/SUPERSONIC are FORCED to a long-enough
+ *                        runway (they physically cannot use short strips),
+ *                        HELICOPTER is FORCED to a pad, LIGHT PREFERS a short
+ *                        runway but may land anywhere legal (don't-care). This
+ *                        is consumed by assignLandingTarget() below. Pure data.
  */
 export const AIRCRAFT_DEFS = Object.freeze({
   [AircraftKind.LIGHT]: {
@@ -78,6 +85,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     color: "#8fff6a",
     landsOnHelipad: false,
     usesRunway: true,
+    assignmentPolicy: "prefer-short",
     drawShape: drawLight,
   },
   [AircraftKind.COMMERCIAL]: {
@@ -95,6 +103,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     color: "#39ff14",
     landsOnHelipad: false,
     usesRunway: true,
+    assignmentPolicy: "forced-long",
     drawShape: drawCommercial,
   },
   [AircraftKind.HELICOPTER]: {
@@ -112,6 +121,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     color: "#6ad1ff",
     landsOnHelipad: true,
     usesRunway: false,
+    assignmentPolicy: "forced-pad",
     drawShape: drawHelicopter,
   },
   [AircraftKind.SUPERSONIC]: {
@@ -129,6 +139,7 @@ export const AIRCRAFT_DEFS = Object.freeze({
     color: "#ffd23b",
     landsOnHelipad: false,
     usesRunway: true,
+    assignmentPolicy: "forced-long",
     drawShape: drawSupersonic,
   },
 });
@@ -165,6 +176,70 @@ export function requiredSeparation(leaderDef, followerDef, wakeMultiplier = 1) {
     return Math.max(base, leaderDef.wakeSeparation * wakeMultiplier);
   }
   return base;
+}
+
+/**
+ * Choose a concrete landing target for a class on a given map, deterministically
+ * given an rng. Returns a plain-data assignment the strip/render/landing layers
+ * can read:
+ *
+ *   { kind: 'runway'|'helipad'|'any',
+ *     runwayId?: string,   // when kind === 'runway'
+ *     padId?: string,      // when kind === 'helipad'
+ *     mode: 'forced'|'preferred'|'any' }
+ *
+ * Rules by def.assignmentPolicy:
+ *   'forced-long'  (commercial/supersonic): FORCED to a runway long enough for
+ *                  the class (length >= runwayLengthRequired). A specific legal
+ *                  runway is picked via rng among the eligible ones.
+ *   'forced-pad'   (helicopter): FORCED to a specific helipad (rng among pads).
+ *   'prefer-short' (light): PREFERS the shortest legal runway (a soft target it
+ *                  would rather use), but about a third of the time returns a
+ *                  don't-care assignment (mode 'any', no specific surface) so a
+ *                  light plane may be happy landing anywhere legal.
+ *   'any'          fallback: mode 'any' with no specific surface.
+ *
+ * Deterministic for a fixed rng so smoke/tests are reproducible. Pure (reads
+ * only map data + rng; mutates nothing). Falls back gracefully to mode 'any'
+ * when no eligible surface exists on the map.
+ * @param {object} def aircraft definition (from AIRCRAFT_DEFS)
+ * @param {object} map a built map (runways[], helipads[]/helipad)
+ * @param {object} rng seeded rng (createRng) — uses rng.pick / rng.chance
+ * @returns {{kind:string, runwayId?:string, padId?:string, mode:string}}
+ */
+export function assignLandingTarget(def, map, rng) {
+  const policy = def.assignmentPolicy || "any";
+  const pads = map.helipads && map.helipads.length ? map.helipads : map.helipad ? [map.helipad] : [];
+  const runways = map.runways || [];
+
+  if (policy === "forced-pad") {
+    const pad = rng && rng.pick ? rng.pick(pads) : pads[0];
+    if (pad) return { kind: "helipad", padId: pad.id, mode: "forced" };
+    return { kind: "any", mode: "any" };
+  }
+
+  if (policy === "forced-long") {
+    const eligible = runways.filter((r) => r.length >= def.runwayLengthRequired);
+    const runway = eligible.length ? (rng && rng.pick ? rng.pick(eligible) : eligible[0]) : null;
+    if (runway) return { kind: "runway", runwayId: runway.id, mode: "forced" };
+    return { kind: "any", mode: "any" };
+  }
+
+  if (policy === "prefer-short") {
+    const legal = runways.filter((r) => r.length >= def.runwayLengthRequired);
+    // Don't-care a portion of the time: a light plane that is happy anywhere.
+    if (!legal.length || (rng && rng.chance && rng.chance(0.34))) {
+      return { kind: "any", mode: "any" };
+    }
+    // Soft preference for the shortest eligible strip.
+    let shortest = legal[0];
+    for (const r of legal) {
+      if (r.length < shortest.length) shortest = r;
+    }
+    return { kind: "runway", runwayId: shortest.id, mode: "preferred" };
+  }
+
+  return { kind: "any", mode: "any" };
 }
 
 // ---------------------------------------------------------------------------

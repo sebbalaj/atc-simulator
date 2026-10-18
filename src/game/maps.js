@@ -88,6 +88,7 @@ export function createMap2(width, height) {
   const bigY = height * 0.26;
   const bigRunway = createRunway({
     id: "36L",
+    endLabels: { near: "36L", far: "18R" },
     x: cx,
     y: bigY,
     heading: 90 * DEG, // landing toward +y (south), into the field from the top
@@ -102,6 +103,7 @@ export function createMap2(width, height) {
   const smallY = height * 0.76;
   const smallRunway = createRunway({
     id: "18R",
+    endLabels: { near: "18R", far: "36L" },
     x: cx,
     y: smallY,
     heading: -90 * DEG, // landing toward -y (north), into the field from below
@@ -167,6 +169,7 @@ export function createMap3(width, height) {
   // the approach cone and rollout follow the deck.
   const carrier = createRunway({
     id: "CVN",
+    endLabels: { near: "CVN", far: "CVN" },
     x: cx,
     y: height * 0.74,
     heading: 10 * DEG,
@@ -226,6 +229,7 @@ export function createMap4(width, height) {
     runways.push(
       createRunway({
         id: "RW" + (i + 1),
+        endLabels: { near: "RW" + (i + 1), far: "RW" + (i + 1) },
         x: cx,
         y: topY + spacing * i,
         heading: 0, // all parallel, landing toward +x (east)

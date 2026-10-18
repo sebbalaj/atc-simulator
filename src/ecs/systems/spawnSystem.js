@@ -15,7 +15,12 @@ import {
   Fuel,
   Label,
 } from "../components.js";
-import { ALL_KINDS, getAircraftDef, AircraftKind } from "../../game/aircraft.js";
+import {
+  ALL_KINDS,
+  getAircraftDef,
+  AircraftKind,
+  assignLandingTarget,
+} from "../../game/aircraft.js";
 
 const CALLSIGN_PREFIX = {
   [AircraftKind.LIGHT]: "N",
@@ -74,13 +79,17 @@ export function createSpawnSystem(game) {
       rng.range(def.passengers[0], def.passengers[1])
     );
 
+    // Deterministic landing assignment via the seeded rng (data-only; nothing
+    // reads it yet — later strip/render/landing features consume it).
+    const assignment = assignLandingTarget(def, map, rng);
+
     const id = world.createEntity();
     world.addComponent(id, Components.Transform, Transform(x, y, heading));
     world.addComponent(id, Components.Velocity, Velocity(def.speed));
     world.addComponent(
       id,
       Components.Aircraft,
-      Aircraft(kind, { passengers, state: "inbound" })
+      Aircraft(kind, { passengers, state: "inbound", assignment })
     );
     // Start with no drawn route; the plane drifts straight inbound.
     world.addComponent(id, Components.Path, Path([]));

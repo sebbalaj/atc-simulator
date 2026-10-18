@@ -872,6 +872,11 @@ body {
               passengers: opts.passengers ?? 0,
               state: opts.state ?? "inbound", // inbound | holding | landing | landed
               emergency: opts.emergency ?? null, // null | "mayday" | "fuel" | "medical"
+              // Landing assignment chosen at spawn: the surface this plane should (or
+              // prefers to) land on. Shape: { kind:'runway'|'helipad'|'any',
+              // runwayId?/padId?, mode:'forced'|'preferred'|'any' } or null. Data-only
+              // foundation read by later strip/render/landing features.
+              assignment: opts.assignment ?? null,
             };
           }
 
@@ -913,6 +918,11 @@ body {
               color: opts.color ?? "#39ff14",
               size: opts.size ?? 8,
               blink: opts.blink ?? false,
+              // Display-only: set true by the render layer when a plane is concealed by
+              // the fog region (shows a '?' glyph, greys its strip). Written only by
+              // render, never by the sim. Defaults false so pure/headless code is
+              // unaffected.
+              fogHidden: opts.fogHidden ?? false,
               // Display-only radar-sweep state (render layer owns these).
               seen: opts.seen ?? false, // has the beam ever swept this plane?
               lastSweepX: opts.lastSweepX ?? 0, // last-swept displayed position
@@ -1011,6 +1021,13 @@ body {
            *  - color:              radar icon color.
            *  - landsOnHelipad:     true for the helicopter (helipad accepts any heading).
            *  - usesRunway:         true if the class lands on runways.
+           *  - assignmentPolicy:   per-class landing-assignment preference, one of
+           *                        'forced-long' | 'forced-pad' | 'prefer-short' | 'any'.
+           *                        COMMERCIAL/SUPERSONIC are FORCED to a long-enough
+           *                        runway (they physically cannot use short strips),
+           *                        HELICOPTER is FORCED to a pad, LIGHT PREFERS a short
+           *                        runway but may land anywhere legal (don't-care). This
+           *                        is consumed by assignLandingTarget() below. Pure data.
            */
           const AIRCRAFT_DEFS = Object.freeze({
             [AircraftKind.LIGHT]: {
@@ -1028,6 +1045,7 @@ body {
               color: "#8fff6a",
               landsOnHelipad: false,
               usesRunway: true,
+              assignmentPolicy: "prefer-short",
               drawShape: drawLight,
             },
             [AircraftKind.COMMERCIAL]: {
@@ -1045,6 +1063,7 @@ body {
               color: "#39ff14",
               landsOnHelipad: false,
               usesRunway: true,
+              assignmentPolicy: "forced-long",
               drawShape: drawCommercial,
             },
             [AircraftKind.HELICOPTER]: {
@@ -1062,6 +1081,7 @@ body {
               color: "#6ad1ff",
               landsOnHelipad: true,
               usesRunway: false,
+              assignmentPolicy: "forced-pad",
               drawShape: drawHelicopter,
             },
             [AircraftKind.SUPERSONIC]: {
@@ -1079,6 +1099,7 @@ body {
               color: "#ffd23b",
               landsOnHelipad: false,
               usesRunway: true,
+              assignmentPolicy: "forced-long",
               drawShape: drawSupersonic,
             },
           });
@@ -1115,6 +1136,70 @@ body {
               return Math.max(base, leaderDef.wakeSeparation * wakeMultiplier);
             }
             return base;
+          }
+
+          /**
+           * Choose a concrete landing target for a class on a given map, deterministically
+           * given an rng. Returns a plain-data assignment the strip/render/landing layers
+           * can read:
+           *
+           *   { kind: 'runway'|'helipad'|'any',
+           *     runwayId?: string,   // when kind === 'runway'
+           *     padId?: string,      // when kind === 'helipad'
+           *     mode: 'forced'|'preferred'|'any' }
+           *
+           * Rules by def.assignmentPolicy:
+           *   'forced-long'  (commercial/supersonic): FORCED to a runway long enough for
+           *                  the class (length >= runwayLengthRequired). A specific legal
+           *                  runway is picked via rng among the eligible ones.
+           *   'forced-pad'   (helicopter): FORCED to a specific helipad (rng among pads).
+           *   'prefer-short' (light): PREFERS the shortest legal runway (a soft target it
+           *                  would rather use), but about a third of the time returns a
+           *                  don't-care assignment (mode 'any', no specific surface) so a
+           *                  light plane may be happy landing anywhere legal.
+           *   'any'          fallback: mode 'any' with no specific surface.
+           *
+           * Deterministic for a fixed rng so smoke/tests are reproducible. Pure (reads
+           * only map data + rng; mutates nothing). Falls back gracefully to mode 'any'
+           * when no eligible surface exists on the map.
+           * @param {object} def aircraft definition (from AIRCRAFT_DEFS)
+           * @param {object} map a built map (runways[], helipads[]/helipad)
+           * @param {object} rng seeded rng (createRng) — uses rng.pick / rng.chance
+           * @returns {{kind:string, runwayId?:string, padId?:string, mode:string}}
+           */
+          function assignLandingTarget(def, map, rng) {
+            const policy = def.assignmentPolicy || "any";
+            const pads = map.helipads && map.helipads.length ? map.helipads : map.helipad ? [map.helipad] : [];
+            const runways = map.runways || [];
+
+            if (policy === "forced-pad") {
+              const pad = rng && rng.pick ? rng.pick(pads) : pads[0];
+              if (pad) return { kind: "helipad", padId: pad.id, mode: "forced" };
+              return { kind: "any", mode: "any" };
+            }
+
+            if (policy === "forced-long") {
+              const eligible = runways.filter((r) => r.length >= def.runwayLengthRequired);
+              const runway = eligible.length ? (rng && rng.pick ? rng.pick(eligible) : eligible[0]) : null;
+              if (runway) return { kind: "runway", runwayId: runway.id, mode: "forced" };
+              return { kind: "any", mode: "any" };
+            }
+
+            if (policy === "prefer-short") {
+              const legal = runways.filter((r) => r.length >= def.runwayLengthRequired);
+              // Don't-care a portion of the time: a light plane that is happy anywhere.
+              if (!legal.length || (rng && rng.chance && rng.chance(0.34))) {
+                return { kind: "any", mode: "any" };
+              }
+              // Soft preference for the shortest eligible strip.
+              let shortest = legal[0];
+              for (const r of legal) {
+                if (r.length < shortest.length) shortest = r;
+              }
+              return { kind: "runway", runwayId: shortest.id, mode: "preferred" };
+            }
+
+            return { kind: "any", mode: "any" };
           }
 
           // ---------------------------------------------------------------------------
@@ -1335,6 +1420,7 @@ body {
           exports.ALL_KINDS = ALL_KINDS;
           exports.getAircraftDef = getAircraftDef;
           exports.requiredSeparation = requiredSeparation;
+          exports.assignLandingTarget = assignLandingTarget;
         },
         "src/game/airport.js": function (exports, require) {
           // Airport geometry and the Map 1 ("Regional Airfield") definition. A runway has
@@ -1490,12 +1576,77 @@ body {
           }
 
           /**
+           * Derive a sensible pair of opposite end labels from a runway id. A runway id
+           * commonly encodes both landing ends (e.g. '09/27', '13/31', '10/28'): the
+           * heading-0 end is the first token and the heading-PI (reciprocal) end is the
+           * second. For a single-token id ('36L','RW1','CVN') we attempt to compute the
+           * reciprocal of a two-digit magnetic-heading id ('36L' -> '18R', flipping the
+           * L/R side) and otherwise fall back to the id itself for both ends. Pure.
+           *
+           * Returns { near, far } where `near` is the label for the runway.heading end
+           * and `far` is the label for the reciprocal (runway.heading + PI) end.
+           * @param {string} id
+           * @returns {{near:string, far:string}}
+           */
+          function deriveEndLabels(id) {
+            if (typeof id !== "string" || id.length === 0) {
+              return { near: String(id ?? ""), far: String(id ?? "") };
+            }
+            // Explicit two-end form 'A/B'.
+            if (id.includes("/")) {
+              const [a, b] = id.split("/");
+              return { near: a, far: b || a };
+            }
+            // Single magnetic-heading token like '36L' / '18R' (two digits + optional
+            // side letter): compute the reciprocal heading (+/-18 in units of 10deg) and
+            // swap the L/R side so the opposite end reads correctly.
+            const m = id.match(/^(\d{1,2})([LRC]?)$/);
+            if (m) {
+              const num = parseInt(m[1], 10);
+              if (num >= 1 && num <= 36) {
+                let recip = num + 18;
+                if (recip > 36) recip -= 36;
+                const sideMap = { L: "R", R: "L", C: "C", "": "" };
+                const recipSide = sideMap[m[2]] ?? m[2];
+                const recipNum = String(recip).padStart(2, "0");
+                return { near: id, far: recipNum + recipSide };
+              }
+            }
+            // Non-heading id (e.g. 'RW1','CVN'): one stable label for both ends.
+            return { near: id, far: id };
+          }
+
+          /**
+           * The end label string for a given landing direction on a runway. `direction`
+           * is a heading (radians). If it matches the runway's base heading the `near`
+           * end label is returned; the reciprocal direction returns the `far` label.
+           * Falls back to deriving labels from the id when a runway predates endLabels.
+           * Pure function.
+           * @param {object} runway
+           * @param {number} direction landing heading (radians)
+           * @returns {string}
+           */
+          function runwayEndLabel(runway, direction) {
+            const labels = runway.endLabels || deriveEndLabels(runway.id);
+            // Which end does `direction` correspond to? Compare against the base heading.
+            const diff = angleDifference(direction, runway.heading);
+            return diff <= Math.PI / 2 ? labels.near : labels.far;
+          }
+
+          /**
            * Create a runway with a mutable occupancy state. `clearTime` is how long (s)
            * the runway stays blocked after a landing.
+           *
+           * `endLabels` { near, far } are human-readable END names for the two landing
+           * directions (the heading end and its reciprocal). They are DISPLAY labels; the
+           * string `id` remains the stable physical-strip identifier (tests and
+           * clearance.runwayId depend on the id, never on the labels). When omitted they
+           * are derived from the id via deriveEndLabels.
            */
           function createRunway(opts) {
             return {
               id: opts.id,
+              endLabels: opts.endLabels ?? deriveEndLabels(opts.id),
               x: opts.x,
               y: opts.y,
               heading: opts.heading,
@@ -1685,6 +1836,8 @@ body {
           exports.runwayFarEnd = runwayFarEnd;
           exports.isRunwayAligned = isRunwayAligned;
           exports.isHelipadLanding = isHelipadLanding;
+          exports.deriveEndLabels = deriveEndLabels;
+          exports.runwayEndLabel = runwayEndLabel;
           exports.createRunway = createRunway;
           exports.isRunwayClear = isRunwayClear;
           exports.occupyRunway = occupyRunway;
@@ -2798,6 +2951,7 @@ body {
             const bigY = height * 0.26;
             const bigRunway = createRunway({
               id: "36L",
+              endLabels: { near: "36L", far: "18R" },
               x: cx,
               y: bigY,
               heading: 90 * DEG, // landing toward +y (south), into the field from the top
@@ -2812,6 +2966,7 @@ body {
             const smallY = height * 0.76;
             const smallRunway = createRunway({
               id: "18R",
+              endLabels: { near: "18R", far: "36L" },
               x: cx,
               y: smallY,
               heading: -90 * DEG, // landing toward -y (north), into the field from below
@@ -2877,6 +3032,7 @@ body {
             // the approach cone and rollout follow the deck.
             const carrier = createRunway({
               id: "CVN",
+              endLabels: { near: "CVN", far: "CVN" },
               x: cx,
               y: height * 0.74,
               heading: 10 * DEG,
@@ -2936,6 +3092,7 @@ body {
               runways.push(
                 createRunway({
                   id: "RW" + (i + 1),
+                  endLabels: { near: "RW" + (i + 1), far: "RW" + (i + 1) },
                   x: cx,
                   y: topY + spacing * i,
                   heading: 0, // all parallel, landing toward +x (east)
@@ -4205,7 +4362,7 @@ body {
 
           const { Components } = require("src/ecs/components.js");
           const { Transform, Velocity, Aircraft, Path, Hitbox, Render, Fuel, Label } = require("src/ecs/components.js");
-          const { ALL_KINDS, getAircraftDef, AircraftKind } = require("src/game/aircraft.js");
+          const { ALL_KINDS, getAircraftDef, AircraftKind, assignLandingTarget } = require("src/game/aircraft.js");
 
           const CALLSIGN_PREFIX = {
             [AircraftKind.LIGHT]: "N",
@@ -4264,13 +4421,17 @@ body {
                 rng.range(def.passengers[0], def.passengers[1])
               );
 
+              // Deterministic landing assignment via the seeded rng (data-only; nothing
+              // reads it yet — later strip/render/landing features consume it).
+              const assignment = assignLandingTarget(def, map, rng);
+
               const id = world.createEntity();
               world.addComponent(id, Components.Transform, Transform(x, y, heading));
               world.addComponent(id, Components.Velocity, Velocity(def.speed));
               world.addComponent(
                 id,
                 Components.Aircraft,
-                Aircraft(kind, { passengers, state: "inbound" })
+                Aircraft(kind, { passengers, state: "inbound", assignment })
               );
               // Start with no drawn route; the plane drifts straight inbound.
               world.addComponent(id, Components.Path, Path([]));

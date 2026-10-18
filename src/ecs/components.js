@@ -39,6 +39,11 @@ export function Aircraft(kind = "light", opts = {}) {
     passengers: opts.passengers ?? 0,
     state: opts.state ?? "inbound", // inbound | holding | landing | landed
     emergency: opts.emergency ?? null, // null | "mayday" | "fuel" | "medical"
+    // Landing assignment chosen at spawn: the surface this plane should (or
+    // prefers to) land on. Shape: { kind:'runway'|'helipad'|'any',
+    // runwayId?/padId?, mode:'forced'|'preferred'|'any' } or null. Data-only
+    // foundation read by later strip/render/landing features.
+    assignment: opts.assignment ?? null,
   };
 }
 
@@ -80,6 +85,11 @@ export function Render(opts = {}) {
     color: opts.color ?? "#39ff14",
     size: opts.size ?? 8,
     blink: opts.blink ?? false,
+    // Display-only: set true by the render layer when a plane is concealed by
+    // the fog region (shows a '?' glyph, greys its strip). Written only by
+    // render, never by the sim. Defaults false so pure/headless code is
+    // unaffected.
+    fogHidden: opts.fogHidden ?? false,
     // Display-only radar-sweep state (render layer owns these).
     seen: opts.seen ?? false, // has the beam ever swept this plane?
     lastSweepX: opts.lastSweepX ?? 0, // last-swept displayed position
